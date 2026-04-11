@@ -1,0 +1,58 @@
+:root {
+  --bg: #f7f2e7;
+  --ink: #211a10;
+  --line: #ccbda5;
+  --panel: #fff9ef;
+  --accent: #b5542f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font: 14px/1.45 "Avenir Next", "Segoe UI", sans-serif;
+  background: radial-gradient(circle at top right, #fff5db, var(--bg) 42%);
+  color: var(--ink);
+}
+
+#app {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 28px 20px 40px;
+}
+
+.yhp-options-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 18px;
+  box-shadow: 0 8px 24px rgba(20, 14, 8, 0.08);
+}
+
+.yhp-options-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.yhp-options-grid label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.yhp-options-grid input[type="number"] {
+  width: 120px;
+}
+
+.yhp-options-grid input[type="range"] {
+  width: 180px;
+}
+
+.yhp-status {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--accent);
+}

@@ -1,0 +1,46 @@
+.yhp-popup {
+  width: 240px;
+  padding: 14px;
+  font-family: system-ui, sans-serif;
+  color: #fff;
+  background: #171717;
+}
+
+.yhp-popup-card {
+  display: grid;
+  gap: 12px;
+}
+
+.yhp-popup-card h1 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.yhp-popup-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.yhp-popup-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.yhp-popup-actions button {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.yhp-popup-status {
+  min-height: 16px;
+  margin: 0;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.72);
+}

@@ -1,0 +1,43 @@
+#yhp-overlay {
+  position: absolute;
+  z-index: 2147483647;
+}
+
+.yhp-shell {
+  display: grid;
+  grid-template-rows: auto auto auto;
+  width: 100%;
+  background: rgba(16, 16, 16, 0.96);
+  color: #fff;
+  border-radius: 14px;
+  overflow: hidden;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+}
+
+.yhp-player-host {
+  width: 100%;
+  background: #000;
+}
+
+.yhp-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 10px 12px;
+}
+
+.yhp-controls button {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.yhp-meta {
+  padding: 0 12px 10px;
+  font-size: 12px;
+  opacity: 0.85;
+  min-height: 18px;
+}

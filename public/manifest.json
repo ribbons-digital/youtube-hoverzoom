@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Hover Player",
+  "version": "0.1.0",
+  "description": "Floating hover mini-player for YouTube thumbnails.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://www.youtube.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["assets/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "src/popup/index.html"
+  },
+  "options_page": "src/options/index.html"
+}
