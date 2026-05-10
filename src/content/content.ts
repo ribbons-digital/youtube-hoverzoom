@@ -43,6 +43,7 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
   let currentLocation = window.location.href;
   let lastSwitchAt = 0;
   let scrollBlockedUntil = 0;
+  let lastPointer: { clientX: number; clientY: number } | null = null;
 
   const cardsById = new Map<string, HTMLElement>();
   const overlay = createOverlay();
@@ -120,6 +121,8 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
         muted: settings.defaultMuted,
         volume: settings.defaultVolume
       });
+      machine.unpin();
+      overlay.setPinned(false);
     },
     onClose: () => {
       debugLog(settings.debug, "close");
@@ -161,35 +164,52 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
     });
   };
 
+  const isPointerWithinRect = (pointer: { clientX: number; clientY: number } | null, rect: DOMRect) => {
+    if (!pointer) return false;
+    if (!Number.isFinite(pointer.clientX) || !Number.isFinite(pointer.clientY)) return false;
+    if (rect.width <= 0 || rect.height <= 0) return false;
+
+    return (
+      pointer.clientX >= rect.left &&
+      pointer.clientX <= rect.right &&
+      pointer.clientY >= rect.top &&
+      pointer.clientY <= rect.bottom
+    );
+  };
+
+  const isPointerWithinActiveHoverFootprint = (pointer: { clientX: number; clientY: number } | null) => {
+    const snapshot = machine.getSnapshot();
+    if (!snapshot.currentCardId) return false;
+
+    const card = cardsById.get(snapshot.currentCardId);
+    const withinCard = !!card && isPointerWithinRect(pointer, card.getBoundingClientRect());
+    const withinOverlay = isPointerWithinRect(pointer, overlayElement.getBoundingClientRect());
+    return withinCard || withinOverlay;
+  };
+
   const reconcilePointerTarget = (
     target: EventTarget | null,
     pointer: { clientX: number; clientY: number } | null = null
   ) => {
     const snapshot = machine.getSnapshot();
-    if (snapshot.mode !== "open" && snapshot.mode !== "closing") return;
+    if (snapshot.mode !== "hover_pending" && snapshot.mode !== "open" && snapshot.mode !== "closing") return;
     if (!snapshot.currentCardId) return;
 
     const card = cardsById.get(snapshot.currentCardId);
     const withinOverlay = target instanceof Node && overlayElement.contains(target);
+    const withinOverlayByPointer = isPointerWithinRect(pointer, overlayElement.getBoundingClientRect());
     const withinCardByTarget = !!card && target instanceof Node && card.contains(target);
-    const withinCardByPointer =
-      !!card &&
-      !!pointer &&
-      Number.isFinite(pointer.clientX) &&
-      Number.isFinite(pointer.clientY) &&
-      (() => {
-        const rect = card.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) return false;
-        return (
-          pointer.clientX >= rect.left &&
-          pointer.clientX <= rect.right &&
-          pointer.clientY >= rect.top &&
-          pointer.clientY <= rect.bottom
-        );
-      })();
+    const withinCardByPointer = !!card && isPointerWithinRect(pointer, card.getBoundingClientRect());
     const withinCard = withinCardByTarget || withinCardByPointer;
 
-    if (withinOverlay || withinCard) {
+    if (snapshot.mode === "hover_pending") {
+      if (!withinCard) {
+        machine.pointerLeft();
+      }
+      return;
+    }
+
+    if (withinOverlay || withinOverlayByPointer || withinCard) {
       machine.pointerEntered(snapshot.currentCardId);
     } else {
       machine.pointerLeft();
@@ -199,6 +219,12 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
   const handlePointerOver = (event: PointerEvent) => {
     if (!isContentPageEnabled(getPageType(), settings)) return;
     if (Date.now() < scrollBlockedUntil) return;
+    if (machine.getSnapshot().pinned) return;
+
+    lastPointer = {
+      clientX: event.clientX,
+      clientY: event.clientY
+    };
 
     const card = findVideoCardFromTarget(event.target);
     if (!card || !isSupportedCard(card)) return;
@@ -212,7 +238,13 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
   };
 
   const handlePointerOut = (event: PointerEvent) => {
+    lastPointer = {
+      clientX: event.clientX,
+      clientY: event.clientY
+    };
+
     if (!(event.relatedTarget instanceof Node)) {
+      if (machine.getSnapshot().pinned) return;
       resetHoverSession();
       return;
     }
@@ -240,6 +272,19 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
       preserveOverlaySession();
       return;
     }
+
+    if (action === "pin-toggle") {
+      const snapshot = machine.getSnapshot();
+      if (snapshot.pinned) {
+        machine.unpin();
+        overlay.setPinned(false);
+        reconcilePointerTarget(null, lastPointer);
+      } else {
+        machine.pin();
+        overlay.setPinned(true);
+      }
+      return;
+    }
   };
 
   const handleLocationChange = () => {
@@ -252,10 +297,16 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
 
   const handleScroll = () => {
     scrollBlockedUntil = Date.now() + SCROLL_REOPEN_COOLDOWN_MS;
+    if (machine.getSnapshot().pinned) return;
     resetHoverSession();
   };
 
   const handleWindowExit = () => {
+    if (machine.getSnapshot().pinned) return;
+    if (document.visibilityState !== "hidden" && isPointerWithinActiveHoverFootprint(lastPointer)) {
+      return;
+    }
+
     resetHoverSession();
   };
 
@@ -291,6 +342,11 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
   document.addEventListener("pointerover", handlePointerOver);
   document.addEventListener("pointerout", handlePointerOut);
   document.addEventListener("pointermove", (event) => {
+    lastPointer = {
+      clientX: event.clientX,
+      clientY: event.clientY
+    };
+
     reconcilePointerTarget(event.target, {
       clientX: event.clientX,
       clientY: event.clientY
@@ -303,13 +359,11 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
     if (activeId) machine.pointerEntered(activeId);
   });
   overlayElement.addEventListener("pointerleave", (event) => {
-    const related = (event as PointerEvent).relatedTarget;
-    if (related instanceof Node) {
-      const activeId = machine.getSnapshot().currentCardId;
-      const activeCard = activeId ? cardsById.get(activeId) : null;
-      if (activeCard && activeCard.contains(related)) return;
-    }
-    machine.pointerLeft();
+    const pointerEvent = event as PointerEvent;
+    reconcilePointerTarget(pointerEvent.relatedTarget, {
+      clientX: pointerEvent.clientX,
+      clientY: pointerEvent.clientY
+    });
   });
   overlayElement.addEventListener("click", handleOverlayClick);
 

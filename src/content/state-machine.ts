@@ -12,6 +12,7 @@ export function createHoverStateMachine(options: StateMachineOptions) {
   let currentCardId: string | null = null;
   let hoverTimer: number | null = null;
   let closeTimer: number | null = null;
+  let pinned = false;
 
   const clearHoverTimer = () => {
     if (hoverTimer !== null) window.clearTimeout(hoverTimer);
@@ -24,6 +25,14 @@ export function createHoverStateMachine(options: StateMachineOptions) {
   };
 
   return {
+    pin() {
+      pinned = true;
+    },
+
+    unpin() {
+      pinned = false;
+    },
+
     pointerEntered(cardId: string) {
       currentCardId = cardId;
       clearCloseTimer();
@@ -48,6 +57,7 @@ export function createHoverStateMachine(options: StateMachineOptions) {
       }
 
       if (mode === "open") {
+        if (pinned) return;
         mode = "closing";
         clearCloseTimer();
         closeTimer = window.setTimeout(() => {
@@ -63,10 +73,11 @@ export function createHoverStateMachine(options: StateMachineOptions) {
       clearCloseTimer();
       currentCardId = null;
       mode = "idle";
+      pinned = false;
     },
 
     getSnapshot() {
-      return { mode, currentCardId };
+      return { mode, currentCardId, pinned };
     }
   };
 }

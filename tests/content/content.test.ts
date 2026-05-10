@@ -61,6 +61,21 @@ describe("content script orchestration", () => {
     expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(true);
   });
 
+  it("does not open if the pointer leaves the tile during hover delay but stays on the page", () => {
+    document.body.insertAdjacentHTML("beforeend", `<input id="search-box" />`);
+    bootstrapContentScript(testSettings);
+
+    const image = document.querySelector("img") as HTMLElement;
+    const searchBox = document.querySelector("#search-box") as HTMLElement;
+
+    image.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+    image.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, relatedTarget: searchBox }));
+    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+
+    expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(true);
+    expect(document.querySelector("#yhp-player-host iframe")).toBeNull();
+  });
+
   it("closes on escape when focus is not editable", () => {
     bootstrapContentScript(testSettings);
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -124,6 +139,23 @@ describe("content script orchestration", () => {
     expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(true);
   });
 
+  it("does not close on window blur while the pointer is still inside the current tile", () => {
+    const card = document.querySelector("ytd-rich-item-renderer") as HTMLElement;
+    vi.spyOn(card, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 300, 200));
+
+    bootstrapContentScript(testSettings);
+
+    document
+      .querySelector("img")
+      ?.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, clientX: 40, clientY: 40 }));
+    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+
+    document.body.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 40, clientY: 40 }));
+    window.dispatchEvent(new Event("blur"));
+
+    expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(false);
+  });
+
   it("does not close while pointer moves inside current tile bounds", () => {
     const card = document.querySelector("ytd-rich-item-renderer") as HTMLElement;
     vi.spyOn(card, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 300, 200));
@@ -136,6 +168,39 @@ describe("content script orchestration", () => {
     document.body.dispatchEvent(
       new PointerEvent("pointermove", { bubbles: true, clientX: 40, clientY: 40 })
     );
+    vi.advanceTimersByTime(testSettings.closeDelayMs + 10);
+
+    expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(false);
+  });
+
+  it("does not close on window blur while the pointer is still inside the popup", () => {
+    bootstrapContentScript(testSettings);
+
+    document
+      .querySelector("img")
+      ?.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, clientX: 40, clientY: 40 }));
+    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+
+    const overlay = document.querySelector("#yhp-overlay") as HTMLElement;
+    vi.spyOn(overlay, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 100, 960, 800));
+
+    document.body.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 140, clientY: 140 }));
+    window.dispatchEvent(new Event("blur"));
+
+    expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(false);
+  });
+
+  it("does not close when popup pointerleave has no relatedTarget but the pointer is still inside the popup", () => {
+    bootstrapContentScript(testSettings);
+
+    document.querySelector("img")?.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+
+    const overlay = document.querySelector("#yhp-overlay") as HTMLElement;
+    vi.spyOn(overlay, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 100, 960, 800));
+
+    overlay.dispatchEvent(new PointerEvent("pointerenter"));
+    overlay.dispatchEvent(new PointerEvent("pointerleave", { clientX: 140, clientY: 140 }));
     vi.advanceTimersByTime(testSettings.closeDelayMs + 10);
 
     expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(false);

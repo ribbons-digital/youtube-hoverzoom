@@ -30,6 +30,7 @@ export function createOverlay() {
       <div class="yhp-shell">
         <div class="yhp-player-host" id="yhp-player-host"></div>
         <div class="yhp-controls">
+          <button type="button" data-action="pin-toggle" aria-label="Pin preview">Pin</button>
           <button type="button" data-action="close" aria-label="Close preview">Close</button>
         </div>
         <div class="yhp-meta"></div>
@@ -69,6 +70,15 @@ export function createOverlay() {
       const node = ensure();
       node.hidden = true;
       delete node.dataset.visible;
+    },
+
+    setPinned(pinned: boolean) {
+      const node = ensure();
+      const btn = node.querySelector<HTMLElement>('[data-action="pin-toggle"]');
+      if (!btn) return;
+      btn.textContent = pinned ? "Unpin" : "Pin";
+      btn.setAttribute("aria-label", pinned ? "Unpin preview" : "Pin preview");
+      btn.classList.toggle("pinned", pinned);
     },
 
     getElement() {
