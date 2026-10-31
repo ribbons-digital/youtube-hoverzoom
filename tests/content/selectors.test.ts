@@ -5,6 +5,7 @@ import {
   extractVideoId,
   findVideoCardFromTarget,
   getPageType,
+  isShortsCard,
   isSupportedCard
 } from "../../src/content/selectors";
 
@@ -33,16 +34,69 @@ describe("YouTube selectors", () => {
     });
   });
 
-  it("detects page types and ignores shorts links", () => {
+  it("detects page types, including a channel's Shorts tab but not the Shorts player", () => {
     expect(getPageType(new URL("https://www.youtube.com/results?search_query=test"))).toBe("search");
     expect(getPageType(new URL("https://www.youtube.com/feed/subscriptions"))).toBe("subscriptions");
+    expect(getPageType(new URL("https://www.youtube.com/@demo/videos"))).toBe("channelVideos");
+    expect(getPageType(new URL("https://www.youtube.com/@demo/shorts"))).toBe("channelVideos");
+    expect(getPageType(new URL("https://www.youtube.com/channel/UC123/shorts"))).toBe("channelVideos");
     expect(getPageType(new URL("https://www.youtube.com/shorts/abc12345678"))).toBe("other");
+    expect(getPageType(new URL("https://www.youtube.com/shorts"))).toBe("other");
   });
 
-  it("returns null when no watch id is present", () => {
-    document.body.innerHTML = `<ytd-rich-item-renderer><a href="/shorts/abc12345678">Short</a></ytd-rich-item-renderer>`;
+  it("returns null when no video id is present", () => {
+    document.body.innerHTML = `<ytd-rich-item-renderer><a href="/shorts/">Shorts</a></ytd-rich-item-renderer>`;
     const card = document.querySelector("ytd-rich-item-renderer") as HTMLElement;
     expect(extractVideoId(card)).toBeNull();
+    expect(isSupportedCard(card)).toBe(false);
+  });
+
+  it("reads a Shorts card from the markup YouTube serves on home and search pages", () => {
+    document.body.innerHTML = `
+      <ytd-rich-item-renderer>
+        <ytm-shorts-lockup-view-model-v2 class="shortsLockupViewModelHost">
+          <ytm-shorts-lockup-view-model class="shortsLockupViewModelHost">
+            <a class="shortsLockupViewModelHostEndpoint reel-item-endpoint" href="/shorts/tvnXhIozvVo">
+              <div class="shortsLockupViewModelHostThumbnailParentContainer">
+                <yt-thumbnail-view-model class="ytThumbnailViewModelHost ytThumbnailViewModelAspectRatio2By3">
+                  <div class="ytThumbnailViewModelImage"><img alt="" /></div>
+                </yt-thumbnail-view-model>
+              </div>
+            </a>
+            <div class="shortsLockupViewModelHostOutsideMetadata">
+              <div>
+                <h3 class="shortsLockupViewModelHostMetadataTitle">
+                  <a class="shortsLockupViewModelHostEndpoint" href="/shorts/tvnXhIozvVo">
+                    <span class="ytAttributedStringHost">Ranking The Best   Hairstyles</span>
+                  </a>
+                </h3>
+                <div class="shortsLockupViewModelHostOutsideMetadataSubhead">
+                  <span class="ytAttributedStringHost">4.1m views</span>
+                </div>
+              </div>
+            </div>
+          </ytm-shorts-lockup-view-model>
+        </ytm-shorts-lockup-view-model-v2>
+      </ytd-rich-item-renderer>
+    `;
+    const thumbnail = document.querySelector("yt-thumbnail-view-model") as HTMLElement;
+    thumbnail.getBoundingClientRect = () => ({ top: 0, left: 0, width: 168, height: 252, right: 168, bottom: 252 }) as DOMRect;
+
+    const card = findVideoCardFromTarget(document.querySelector("img")) as HTMLElement;
+
+    expect(card.tagName.toLowerCase()).toBe("ytm-shorts-lockup-view-model");
+    expect(isSupportedCard(card)).toBe(true);
+    expect(isShortsCard(card)).toBe(true);
+    expect(extractVideoId(card)).toBe("tvnXhIozvVo");
+    expect(extractThumbnailRect(card)?.height).toBe(252);
+    // The subhead holds the view count, so it must not be read as the channel.
+    expect(extractMetadata(card)).toEqual({ title: "Ranking The Best Hairstyles", channel: undefined });
+  });
+
+  it("does not treat a normal video card as a Short", () => {
+    document.body.innerHTML = `<ytd-rich-item-renderer><a id="thumbnail" href="/watch?v=abc12345678"></a></ytd-rich-item-renderer>`;
+    const card = document.querySelector("ytd-rich-item-renderer") as HTMLElement;
+    expect(isShortsCard(card)).toBe(false);
   });
 
   it("prefers the thumbnail rect when available", () => {

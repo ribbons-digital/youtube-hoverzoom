@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_SETTINGS,
   clampSettings,
+  getShortsWidth,
   isPageEnabled,
   normalizeSettings,
   type HoverPlayerSettings
@@ -14,6 +15,17 @@ describe("settings defaults", () => {
     expect(DEFAULT_SETTINGS.enableOnChannelVideos).toBe(true);
     expect(DEFAULT_SETTINGS.overlayWidth).toBe(960);
     expect(DEFAULT_SETTINGS.overlayHeight).toBe(540);
+    expect(DEFAULT_SETTINGS.enableShorts).toBe(true);
+  });
+
+  it("gives Shorts a 9:16 width from the preview height", () => {
+    expect(getShortsWidth(540)).toBe(304);
+    expect(getShortsWidth(720)).toBe(405);
+    expect(getShortsWidth(180)).toBe(101);
+  });
+
+  it("turns Shorts previews on for settings saved before the Shorts setting existed", () => {
+    expect(normalizeSettings({ ...DEFAULT_SETTINGS, enableShorts: undefined }).enableShorts).toBe(true);
   });
 
   it("clamps volume and overlay dimensions to sane bounds", () => {

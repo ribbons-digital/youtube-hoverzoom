@@ -14,6 +14,7 @@ export type HoverPlayerSettings = {
   enableOnSubscriptions: boolean;
   enableOnWatchSidebar: boolean;
   enableOnChannelVideos: boolean;
+  enableShorts: boolean;
   debug: boolean;
 };
 
@@ -35,6 +36,7 @@ export const DEFAULT_SETTINGS: HoverPlayerSettings = {
   enableOnSubscriptions: true,
   enableOnWatchSidebar: true,
   enableOnChannelVideos: true,
+  enableShorts: true,
   debug: false
 };
 
@@ -48,6 +50,12 @@ export const NUMBER_LIMITS: Record<NumericSettingKey, { min: number; max: number
 
 export function isNumericSetting(key: keyof HoverPlayerSettings): key is NumericSettingKey {
   return key in NUMBER_LIMITS;
+}
+
+// Shorts are tall videos. Their preview uses the configured height and a
+// 9:16 width, so the video fills the preview with no black bars.
+export function getShortsWidth(height: number): number {
+  return Math.round((height * 9) / 16);
 }
 
 export function clampSettings(settings: HoverPlayerSettings): HoverPlayerSettings {

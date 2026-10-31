@@ -27,7 +27,7 @@ function toBooleanField(name: SettingKey, label: string, hint = "") {
     </div>`;
 }
 
-function toNumberField(name: SettingKey, label: string, unit: string) {
+function toNumberField(name: SettingKey, label: string, unit: string, note = "") {
   if (!isNumericSetting(name)) throw new Error(`${name} is not a number setting`);
   const { min, max } = NUMBER_LIMITS[name];
   return `
@@ -38,7 +38,7 @@ function toNumberField(name: SettingKey, label: string, unit: string) {
           aria-describedby="${name}-hint ${name}-error" />
         <span class="yhp-unit">${unit}</span>
       </span>
-      <p class="yhp-hint" id="${name}-hint">${min} to ${max} ${unit}</p>
+      <p class="yhp-hint" id="${name}-hint">${min} to ${max} ${unit}.${note ? ` ${note}` : ""}</p>
       <p class="yhp-error" id="${name}-error" hidden></p>
     </div>`;
 }
@@ -79,7 +79,12 @@ export async function renderOptionsPage({ settings, saveSettings, resetSettings 
         <fieldset>
           <legend>Size</legend>
           ${toNumberField("overlayWidth", "Preview width", "px")}
-          ${toNumberField("overlayHeight", "Preview height", "px")}
+          ${toNumberField(
+            "overlayHeight",
+            "Preview height",
+            "px",
+            "Shorts use this height with a tall width. 540 px tall gives 304 px wide."
+          )}
         </fieldset>
         <fieldset>
           <legend>Audio</legend>
@@ -94,7 +99,8 @@ export async function renderOptionsPage({ settings, saveSettings, resetSettings 
           ${toBooleanField("enableOnSearch", "Search results")}
           ${toBooleanField("enableOnSubscriptions", "Subscriptions")}
           ${toBooleanField("enableOnWatchSidebar", "Watch page sidebar")}
-          ${toBooleanField("enableOnChannelVideos", "Channel videos")}
+          ${toBooleanField("enableOnChannelVideos", "Channel videos and Shorts")}
+          ${toBooleanField("enableShorts", "Preview Shorts", "Show previews for Shorts cards on the pages above.")}
         </fieldset>
         <fieldset>
           <legend>Troubleshooting</legend>

@@ -27,6 +27,17 @@ describe("options page", () => {
     expect(input("enableOnChannelVideos").checked).toBe(true);
     expect(document.querySelectorAll("fieldset legend")).not.toHaveLength(0);
     expect(document.body.textContent).toContain("400 to 2000 ms");
+    expect(input("enableShorts").checked).toBe(true);
+  });
+
+  it("saves the Shorts switch", async () => {
+    const shorts = input("enableShorts");
+    shorts.checked = false;
+    shorts.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => expect(status()).toBe("Saved"));
+
+    expect(saveSettings).toHaveBeenCalledWith({ enableShorts: false });
+    expect(shorts.checked).toBe(false);
   });
 
   it("saves a valid change and confirms it", async () => {

@@ -103,6 +103,62 @@ describe("content script orchestration", () => {
     expect(document.querySelector<HTMLElement>(".yhp-player-host")?.style.height).toBe("540px");
   });
 
+  describe("Shorts cards", () => {
+    beforeEach(() => {
+      document.body.innerHTML = `
+        <ytm-shorts-lockup-view-model>
+          <a class="reel-item-endpoint" href="/shorts/short123456"><img /></a>
+          <h3><a href="/shorts/short123456">Demo short</a></h3>
+        </ytm-shorts-lockup-view-model>
+      `;
+    });
+
+    it("opens a tall preview on the normal watch page", () => {
+      bootstrapContentScript(testSettings);
+
+      hoverCard();
+      vi.advanceTimersByTime(testSettings.hoverDelayMs);
+
+      expect(isOverlayHidden()).toBe(false);
+      expect(document.querySelector<HTMLElement>(".yhp-shell")?.style.width).toBe("304px");
+      expect(document.querySelector<HTMLElement>(".yhp-player-host")?.style.height).toBe("540px");
+      expect(document.querySelector<HTMLIFrameElement>("#yhp-player-host iframe")?.src).toContain(
+        "/watch?v=short123456"
+      );
+    });
+
+    it("does not open when Shorts previews are off", () => {
+      bootstrapContentScript({ ...testSettings, enableShorts: false });
+
+      hoverCard();
+      vi.advanceTimersByTime(testSettings.hoverDelayMs);
+
+      expect(isOverlayHidden()).toBe(true);
+    });
+
+    it("closes an open Shorts preview when Shorts previews are turned off", () => {
+      const { emitSettings } = installChromeStub();
+      bootstrapContentScript(testSettings);
+
+      hoverCard();
+      vi.advanceTimersByTime(testSettings.hoverDelayMs);
+      expect(isOverlayHidden()).toBe(false);
+
+      emitSettings({ ...testSettings, enableShorts: false });
+
+      expect(isOverlayHidden()).toBe(true);
+    });
+  });
+
+  it("keeps the configured width for normal videos", () => {
+    bootstrapContentScript({ ...testSettings, overlayWidth: 640 });
+
+    hoverCard();
+    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+
+    expect(document.querySelector<HTMLElement>(".yhp-shell")?.style.width).toBe("640px");
+  });
+
   it("does not open if the pointer leaves the browser window during hover delay", () => {
     bootstrapContentScript(testSettings);
 

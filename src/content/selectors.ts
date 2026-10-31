@@ -1,14 +1,16 @@
 import type { SupportedPageType } from "../shared/page-types";
-import { parseVideoId } from "../shared/youtube";
+import { isShortsUrl, parseVideoId } from "../shared/youtube";
 
 // yt-lockup-view-model is YouTube's newer card element. It replaces the
 // older renderers on some surfaces, such as the watch page sidebar.
+// ytm-shorts-lockup-view-model is the Shorts card on home and search pages.
 const CARD_SELECTOR = [
   "ytd-rich-item-renderer",
   "ytd-video-renderer",
   "ytd-grid-video-renderer",
   "ytd-compact-video-renderer",
-  "yt-lockup-view-model"
+  "yt-lockup-view-model",
+  "ytm-shorts-lockup-view-model"
 ].join(", ");
 
 const THUMBNAIL_SELECTOR = [
@@ -44,8 +46,15 @@ export function findVideoCardFromTarget(target: EventTarget | null): HTMLElement
 }
 
 export function extractVideoUrl(card: HTMLElement): string | null {
-  const link = card.querySelector<HTMLAnchorElement>('a[href*="/watch"]');
+  const link =
+    card.querySelector<HTMLAnchorElement>('a[href*="/watch"]') ??
+    card.querySelector<HTMLAnchorElement>('a[href*="/shorts/"]');
   return link?.getAttribute("href") ?? null;
+}
+
+export function isShortsCard(card: HTMLElement): boolean {
+  const href = extractVideoUrl(card);
+  return !!href && isShortsUrl(href);
 }
 
 export function extractVideoId(card: HTMLElement): string | null {
@@ -93,11 +102,15 @@ export function extractMetadata(card: HTMLElement): { title?: string; channel?: 
   };
 }
 
+const CHANNEL_SHORTS_PATH = /^\/(@[^/]+|channel\/[^/]+|c\/[^/]+|user\/[^/]+)\/shorts\/?$/;
+
 export function getPageType(url = new URL(window.location.href)): SupportedPageType {
   if (url.pathname === "/") return "home";
   if (url.pathname === "/results") return "search";
   if (url.pathname === "/feed/subscriptions") return "subscriptions";
   if (url.pathname === "/watch") return "watchSidebar";
   if (url.pathname.endsWith("/videos")) return "channelVideos";
+  // A channel's Shorts tab, but not YouTube's own Shorts player at /shorts/<id>.
+  if (CHANNEL_SHORTS_PATH.test(url.pathname)) return "channelVideos";
   return "other";
 }

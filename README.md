@@ -35,10 +35,17 @@ Tradeoffs:
 - Search
 - Subscriptions
 - Watch page sidebar
-- Channel videos
+- Channel videos and Shorts tabs
 
 Unsupported or ambiguous card types are ignored safely.
-Shorts are not supported.
+
+### Shorts
+
+Shorts cards get a preview too, on the same pages.
+A Shorts preview is tall: it uses the "Preview height" setting, and its width is 9:16 of that height.
+With the default height of `540` px, a Shorts preview is `304` px wide.
+The Short plays on YouTube's normal watch page, not in YouTube's Shorts player, so pinning, audio memory, and `Escape` work the same way.
+Turn off "Preview Shorts" in the settings to skip Shorts cards and keep normal previews.
 
 ## Current Interaction Model
 
@@ -78,10 +85,11 @@ An invalid value shows a message beside its field and is not saved.
 | Wait before a preview opens | `400` ms | `400` to `2000` ms | How long you must hover a thumbnail before the preview opens. |
 | Wait before a preview closes | `150` ms | `0` to `2000` ms | How long the preview stays after the pointer leaves the card and the preview. |
 | Preview width | `960` px | `320` to `1280` px | Width of the player. |
-| Preview height | `540` px | `180` to `720` px | Height of the player, without the controls and metadata row. |
+| Preview height | `540` px | `180` to `720` px | Height of the player, without the controls and metadata row. Shorts previews use this height with a 9:16 width. |
 | Start previews muted | On | On or off | Audio state for a new preview. Updates when you mute or unmute inside a preview. |
 | Volume | `35` | `0` to `100` | Volume for a new preview. Updates when you change the volume inside a preview. |
-| Pages | All on | On or off for each page | Home, Search results, Subscriptions, Watch page sidebar, and Channel videos. |
+| Pages | All on | On or off for each page | Home, Search results, Subscriptions, Watch page sidebar, and Channel videos and Shorts. |
+| Preview Shorts | On | On or off | Shows previews for Shorts cards on the pages above. |
 | Write debug messages | Off | On or off | Writes `[yhp]` messages to the browser console on YouTube pages. |
 
 `Reset to defaults` restores every value in the table.
@@ -107,7 +115,7 @@ Browsers can block a preview from starting with sound until you interact with Yo
 ### YouTube's own hover preview
 
 While previews are on for the current page, the extension hides YouTube's inline preview (`ytd-video-preview`) and pauses it whenever it starts, so it does not play or download in the background.
-On those pages, this also hides YouTube's inline preview for cards the extension does not support, such as Shorts.
+On those pages, this also hides YouTube's inline preview for cards the extension does not preview, such as Shorts while "Preview Shorts" is off.
 Turn off previews for a page to get YouTube's own preview back on that page.
 
 ### Watch history
@@ -201,6 +209,8 @@ YouTube changes its page structure often, so check these steps on real YouTube b
 10. Change the hover delay and the preview size in the settings: an open YouTube tab uses the new values without a reload.
 11. Enter `50` as the hover delay: the settings page shows an error and does not save it.
 12. Hover a card near the right edge and near the bottom of the window: the preview stays fully on screen and does not cover the thumbnail when there is room beside it.
+13. On Home, Search, and a channel's Shorts tab, hover a Shorts card: a tall preview opens beside it and plays the Short with no black bars at the sides. The metadata row shows the title only.
+14. Turn off "Preview Shorts" in the settings: an open Shorts preview closes, Shorts cards no longer open a preview, and normal video cards still do.
 
 ## Project Structure
 
@@ -247,9 +257,10 @@ The project uses Vitest with JSDOM for unit and integration-style coverage aroun
 
 - This is intentionally scoped to `youtube.com`
 - The hover player is not a universal substitute for YouTube's native preview behavior
-- Shorts, playlists, and full watch-surface customization are out of scope for the current MVP
+- Playlists, YouTube's own Shorts player page (`/shorts/<id>`), and full watch-surface customization are out of scope
 
 ## Related Docs
 
 - [Design spec](./docs/superpowers/specs/2026-04-10-youtube-hover-player-design.md)
 - [MVP plan](./docs/superpowers/plans/2026-04-10-youtube-hover-player-mvp.md)
+- [Shorts previews plan](./docs/superpowers/plans/2026-10-31-shorts-previews.md)
