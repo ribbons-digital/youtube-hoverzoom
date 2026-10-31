@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_SETTINGS } from "../../src/shared/settings";
-import { getSettings, saveLiveAudioState, saveSettings } from "../../src/shared/storage";
+import { getSettings, resetSettings, saveLiveAudioState, saveSettings } from "../../src/shared/storage";
 
 describe("storage helpers", () => {
   beforeEach(() => {
@@ -35,5 +35,12 @@ describe("storage helpers", () => {
 
     expect(settings.defaultMuted).toBe(false);
     expect(settings.defaultVolume).toBe(75);
+  });
+
+  it("resets every setting to its default", async () => {
+    await saveSettings({ hoverDelayMs: 900, enabled: false });
+    await resetSettings();
+
+    expect(await getSettings()).toEqual(DEFAULT_SETTINGS);
   });
 });

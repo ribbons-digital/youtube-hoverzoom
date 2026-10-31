@@ -1,15 +1,17 @@
 import { resolve } from "node:path";
 import { defineConfig } from "vite";
 
+// Builds the extension pages. The content script is built separately by
+// vite.content.config.ts, because MV3 content scripts cannot load shared chunks.
+// Neither build empties dist; the package scripts clean it first.
 export default defineConfig({
   build: {
     outDir: "dist",
-    emptyOutDir: true,
+    emptyOutDir: false,
     rollupOptions: {
       input: {
         options: resolve(__dirname, "src/options/index.html"),
-        popup: resolve(__dirname, "src/popup/index.html"),
-        content: resolve(__dirname, "src/content/content.ts")
+        popup: resolve(__dirname, "src/popup/index.html")
       },
       output: {
         entryFileNames: "assets/[name].js",

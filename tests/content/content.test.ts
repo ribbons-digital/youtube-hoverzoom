@@ -1,12 +1,57 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { bootstrapContentScript } from "../../src/content/content";
-import { DEFAULT_SETTINGS } from "../../src/shared/settings";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { bootstrapContentScript as bootstrap } from "../../src/content/content";
+import { installPageBridge } from "../../src/content/page-bridge";
+import { DEFAULT_SETTINGS, type HoverPlayerSettings } from "../../src/shared/settings";
+import { addFakeYouTubePlayer } from "../helpers/fake-youtube-player";
+
+type StorageListener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => void;
 
 describe("content script orchestration", () => {
   const testSettings = {
     ...DEFAULT_SETTINGS,
     debug: false
   };
+
+  let destroyers: Array<() => void> = [];
+
+  const bootstrapContentScript = (settings: HoverPlayerSettings) => {
+    const runtime = bootstrap(settings);
+    destroyers.push(runtime.destroy);
+    return runtime;
+  };
+
+  const installChromeStub = () => {
+    const listeners: StorageListener[] = [];
+    let stored: Record<string, unknown> = {};
+    const set = vi.fn(async (value: Record<string, unknown>) => {
+      stored = { ...stored, ...value };
+    });
+    globalThis.chrome = {
+      storage: {
+        local: {
+          get: vi.fn(async () => stored),
+          set
+        },
+        onChanged: {
+          addListener: vi.fn((listener: StorageListener) => {
+            listeners.push(listener);
+          }),
+          removeListener: vi.fn()
+        }
+      }
+    } as unknown as typeof chrome;
+
+    const emitSettings = (next: HoverPlayerSettings) => {
+      listeners.forEach((listener) => listener({ settings: { oldValue: testSettings, newValue: next } }, "local"));
+    };
+    return { set, emitSettings };
+  };
+
+  const hoverCard = () => {
+    document.querySelector("img")?.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+  };
+
+  const isOverlayHidden = () => document.querySelector("#yhp-overlay")?.hasAttribute("hidden");
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -16,6 +61,14 @@ describe("content script orchestration", () => {
         <a id="video-title">Demo title</a>
       </ytd-rich-item-renderer>
     `;
+  });
+
+  afterEach(() => {
+    destroyers.forEach((destroy) => destroy());
+    destroyers = [];
+    Reflect.deleteProperty(globalThis, "chrome");
+    window.history.replaceState({}, "", "/");
+    vi.useRealTimers();
   });
 
   it("opens overlay after hover delay", () => {
@@ -38,7 +91,7 @@ describe("content script orchestration", () => {
     expect(frame?.src).toContain("/watch?v=abc12345678");
   });
 
-  it("uses a taller watch popup even when a shorter height is configured", () => {
+  it("uses the configured overlay height for the player host", () => {
     bootstrapContentScript({
       ...testSettings,
       overlayHeight: 540
@@ -47,7 +100,7 @@ describe("content script orchestration", () => {
     document.querySelector("img")?.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
     vi.advanceTimersByTime(testSettings.hoverDelayMs);
 
-    expect(document.querySelector<HTMLElement>(".yhp-player-host")?.style.height).toBe("720px");
+    expect(document.querySelector<HTMLElement>(".yhp-player-host")?.style.height).toBe("540px");
   });
 
   it("does not open if the pointer leaves the browser window during hover delay", () => {
@@ -59,6 +112,21 @@ describe("content script orchestration", () => {
     vi.advanceTimersByTime(testSettings.hoverDelayMs);
 
     expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(true);
+  });
+
+  it("does not open if the pointer leaves the tile during hover delay but stays on the page", () => {
+    document.body.insertAdjacentHTML("beforeend", `<input id="search-box" />`);
+    bootstrapContentScript(testSettings);
+
+    const image = document.querySelector("img") as HTMLElement;
+    const searchBox = document.querySelector("#search-box") as HTMLElement;
+
+    image.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+    image.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, relatedTarget: searchBox }));
+    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+
+    expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(true);
+    expect(document.querySelector("#yhp-player-host iframe")).toBeNull();
   });
 
   it("closes on escape when focus is not editable", () => {
@@ -124,6 +192,23 @@ describe("content script orchestration", () => {
     expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(true);
   });
 
+  it("does not close on window blur while the pointer is still inside the current tile", () => {
+    const card = document.querySelector("ytd-rich-item-renderer") as HTMLElement;
+    vi.spyOn(card, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 300, 200));
+
+    bootstrapContentScript(testSettings);
+
+    document
+      .querySelector("img")
+      ?.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, clientX: 40, clientY: 40 }));
+    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+
+    document.body.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 40, clientY: 40 }));
+    window.dispatchEvent(new Event("blur"));
+
+    expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(false);
+  });
+
   it("does not close while pointer moves inside current tile bounds", () => {
     const card = document.querySelector("ytd-rich-item-renderer") as HTMLElement;
     vi.spyOn(card, "getBoundingClientRect").mockReturnValue(new DOMRect(10, 10, 300, 200));
@@ -141,18 +226,119 @@ describe("content script orchestration", () => {
     expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(false);
   });
 
-  it("resets cleanly on route changes", () => {
+  it("does not close on window blur while the pointer is still inside the popup", () => {
+    bootstrapContentScript(testSettings);
+
+    document
+      .querySelector("img")
+      ?.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, clientX: 40, clientY: 40 }));
+    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+
+    const overlay = document.querySelector("#yhp-overlay") as HTMLElement;
+    vi.spyOn(overlay, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 100, 960, 800));
+
+    document.body.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 140, clientY: 140 }));
+    window.dispatchEvent(new Event("blur"));
+
+    expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(false);
+  });
+
+  it("does not close when popup pointerleave has no relatedTarget but the pointer is still inside the popup", () => {
     bootstrapContentScript(testSettings);
 
     document.querySelector("img")?.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
     vi.advanceTimersByTime(testSettings.hoverDelayMs);
 
+    const overlay = document.querySelector("#yhp-overlay") as HTMLElement;
+    vi.spyOn(overlay, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 100, 960, 800));
+
+    overlay.dispatchEvent(new PointerEvent("pointerenter"));
+    overlay.dispatchEvent(new PointerEvent("pointerleave", { clientX: 140, clientY: 140 }));
+    vi.advanceTimersByTime(testSettings.closeDelayMs + 10);
+
+    expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(false);
+  });
+
+  it("discards the preview when YouTube starts a navigation", () => {
+    bootstrapContentScript(testSettings);
+
+    hoverCard();
+    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+
     const frame = document.querySelector<HTMLIFrameElement>("#yhp-player-host iframe") as HTMLIFrameElement;
 
+    // YouTube calls history.pushState in the page's own script context, which
+    // the content script cannot patch, so only its navigation events count.
     window.history.pushState({}, "", "/results?search_query=test");
+    expect(isOverlayHidden()).toBe(false);
 
-    expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(true);
+    document.dispatchEvent(new Event("yt-navigate-start"));
+
+    expect(isOverlayHidden()).toBe(true);
     expect(frame.src).toBe("about:blank");
+  });
+
+  it("updates the active page after YouTube finishes a navigation", () => {
+    bootstrapContentScript(testSettings);
+    expect(document.documentElement.hasAttribute("data-yhp-active")).toBe(true);
+
+    window.history.pushState({}, "", "/feed/history");
+    document.dispatchEvent(new Event("yt-navigate-finish"));
+
+    expect(document.documentElement.hasAttribute("data-yhp-active")).toBe(false);
+    hoverCard();
+    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+    expect(isOverlayHidden()).toBe(true);
+  });
+
+  it("stops YouTube's own inline preview whenever it starts on an active page", () => {
+    document.body.insertAdjacentHTML("beforeend", `<ytd-video-preview><video></video></ytd-video-preview>`);
+    const nativeVideo = document.querySelector("ytd-video-preview video") as HTMLVideoElement;
+    const pause = vi.fn();
+    Object.assign(nativeVideo, { pause });
+    bootstrapContentScript(testSettings);
+
+    nativeVideo.dispatchEvent(new Event("playing"));
+    expect(pause).toHaveBeenCalledTimes(1);
+
+    window.history.pushState({}, "", "/feed/history");
+    document.dispatchEvent(new Event("yt-navigate-finish"));
+    nativeVideo.dispatchEvent(new Event("playing"));
+    expect(pause).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a pinned preview open while the page scrolls", () => {
+    bootstrapContentScript(testSettings);
+
+    hoverCard();
+    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+    document.querySelector<HTMLElement>('[data-action="pin-toggle"]')?.click();
+
+    window.dispatchEvent(new Event("scroll"));
+
+    expect(isOverlayHidden()).toBe(false);
+    expect(document.querySelector<HTMLElement>("#yhp-overlay")?.dataset.pinned).toBe("true");
+  });
+
+  it("opens a card even after an earlier hover could not open", () => {
+    document.body.insertAdjacentHTML(
+      "beforeend",
+      `<ytd-rich-item-renderer id="second"><a href="/watch?v=def12345678"><img id="second-img" /></a></ytd-rich-item-renderer>`
+    );
+    bootstrapContentScript(testSettings);
+
+    hoverCard();
+    // YouTube re-renders the first card before the hover delay ends.
+    document.querySelector("ytd-rich-item-renderer")?.remove();
+    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+    expect(isOverlayHidden()).toBe(true);
+
+    vi.advanceTimersByTime(400);
+    document.querySelector("#second-img")?.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+
+    expect(isOverlayHidden()).toBe(false);
+    expect(document.querySelector<HTMLIFrameElement>("#yhp-player-host iframe")?.src).toContain("def12345678");
   });
 
   it("closes immediately when the page scrolls", () => {
@@ -184,41 +370,64 @@ describe("content script orchestration", () => {
   });
 
   it("responds to live enabled changes from extension storage", () => {
-    const listeners: Array<(changes: Record<string, chrome.storage.StorageChange>, areaName: string) => void> = [];
-    globalThis.chrome = {
-      storage: {
-        local: {
-          get: vi.fn(async () => ({})),
-          set: vi.fn(async () => undefined)
-        },
-        onChanged: {
-          addListener: vi.fn((listener) => {
-            listeners.push(listener);
-          }),
-          removeListener: vi.fn()
-        }
-      }
-    } as unknown as typeof chrome;
-
+    const { emitSettings } = installChromeStub();
     bootstrapContentScript(testSettings);
 
-    document.querySelector("img")?.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+    hoverCard();
     vi.advanceTimersByTime(testSettings.hoverDelayMs);
-    expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(false);
+    expect(isOverlayHidden()).toBe(false);
 
-    listeners[0]?.(
-      {
-        settings: {
-          oldValue: testSettings,
-          newValue: { ...testSettings, enabled: false }
-        }
-      },
-      "local"
-    );
+    emitSettings({ ...testSettings, enabled: false });
+    expect(document.documentElement.hasAttribute("data-yhp-active")).toBe(false);
 
-    document.querySelector("img")?.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
+    hoverCard();
     vi.advanceTimersByTime(testSettings.hoverDelayMs);
 
-    expect(document.querySelector("#yhp-overlay")?.hasAttribute("hidden")).toBe(true);
+    expect(isOverlayHidden()).toBe(true);
+  });
+
+  it("applies a new hover delay without a page reload", () => {
+    const { emitSettings } = installChromeStub();
+    bootstrapContentScript(testSettings);
+
+    emitSettings({ ...testSettings, hoverDelayMs: 1000 });
+    hoverCard();
+    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+    expect(isOverlayHidden()).toBe(true);
+
+    vi.advanceTimersByTime(1000 - testSettings.hoverDelayMs);
+    expect(isOverlayHidden()).toBe(false);
+  });
+
+  it("saves mute and volume changes made inside the preview once the viewer stops changing them", async () => {
+    const { set } = installChromeStub();
+    const removeBridge = installPageBridge();
+    try {
+      bootstrapContentScript(testSettings);
+
+      hoverCard();
+      vi.advanceTimersByTime(testSettings.hoverDelayMs);
+
+      const frame = document.querySelector<HTMLIFrameElement>("#yhp-player-host iframe") as HTMLIFrameElement;
+      const doc = document.implementation.createHTMLDocument("watch");
+      Object.defineProperty(frame, "contentDocument", { value: doc, configurable: true });
+      Object.defineProperty(frame, "contentWindow", { value: { dispatchEvent: vi.fn() }, configurable: true });
+      const { viewerChanges } = addFakeYouTubePlayer(doc);
+      frame.dispatchEvent(new Event("load"));
+
+      vi.advanceTimersByTime(1001);
+      viewerChanges({ muted: false, volume: 70 });
+      viewerChanges({ volume: 80 });
+      vi.advanceTimersByTime(400);
+
+      await vi.waitFor(() => {
+        expect(set).toHaveBeenCalledTimes(1);
+        expect(set).toHaveBeenCalledWith({
+          settings: expect.objectContaining({ defaultMuted: false, defaultVolume: 80 })
+        });
+      });
+    } finally {
+      removeBridge();
+    }
   });
 });

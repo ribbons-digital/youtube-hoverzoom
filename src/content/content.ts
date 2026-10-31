@@ -2,8 +2,6 @@ import { debugLog } from "./debug";
 import { createOverlay } from "./overlay";
 import { createPlayerController } from "./player-controller";
 import { computeOverlayPosition } from "./positioning";
-import { clampContentSettings, DEFAULT_CONTENT_SETTINGS, isContentPageEnabled } from "./runtime-settings";
-import { getContentSettings } from "./runtime-storage";
 import {
   extractMetadata,
   extractThumbnailRect,
@@ -13,13 +11,16 @@ import {
   isSupportedCard
 } from "./selectors";
 import { createHoverStateMachine } from "./state-machine";
-import type { HoverPlayerSettings } from "../shared/settings";
+import { isPageEnabled, normalizeSettings, type HoverPlayerSettings } from "../shared/settings";
+import { getSettings, saveLiveAudioState, SETTINGS_KEY } from "../shared/storage";
 
-const LOCATION_CHANGE_EVENT = "yhp:locationchange";
 const SCROLL_REOPEN_COOLDOWN_MS = 200;
-const WATCH_MIN_OVERLAY_HEIGHT = 720;
-const OVERLAY_CHROME_HEIGHT_WITH_METADATA = 72;
-const OVERLAY_CHROME_HEIGHT_NO_METADATA = 44;
+const SWITCH_COOLDOWN_MS = 300;
+// Dragging the volume slider fires many changes; save only the final value.
+const AUDIO_SAVE_DELAY_MS = 400;
+const OVERLAY_GAP_PX = 16;
+const ACTIVE_PAGE_ATTRIBUTE = "data-yhp-active";
+const NATIVE_PREVIEW_VIDEO_SELECTOR = "ytd-video-preview video, #video-preview video";
 
 declare global {
   interface Window {
@@ -43,22 +44,53 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
   let currentLocation = window.location.href;
   let lastSwitchAt = 0;
   let scrollBlockedUntil = 0;
+  let lastPointer: { clientX: number; clientY: number } | null = null;
+  let audioSaveTimer: number | undefined;
 
-  const cardsById = new Map<string, HTMLElement>();
+  // Removes every listener in destroy(), so tests and re-injection start clean.
+  const listeners = new AbortController();
+  const { signal } = listeners;
+
   const overlay = createOverlay();
   overlay.mount();
 
   const overlayElement = overlay.getElement();
   const playerHost = overlayElement.querySelector<HTMLElement>("#yhp-player-host");
   if (!playerHost) throw new Error("Missing #yhp-player-host");
-  const player = createPlayerController(playerHost);
+
+  // Cards are found through their data attribute instead of a stored map, so
+  // cards that YouTube removes from the page are never kept in memory.
+  // Card ids come from randomId(), so they are safe inside the selector.
+  const getCard = (cardId: string) => document.querySelector<HTMLElement>(`[data-yhp-card-id="${cardId}"]`);
+
+  const isActiveOnCurrentPage = () => isPageEnabled(getPageType(), settings);
+
+  const updateActivePageAttribute = () => {
+    document.documentElement.toggleAttribute(ACTIVE_PAGE_ATTRIBUTE, isActiveOnCurrentPage());
+  };
+
+  const pauseNativePreview = () => {
+    document.querySelectorAll<HTMLVideoElement>(NATIVE_PREVIEW_VIDEO_SELECTOR).forEach((video) => {
+      video.pause?.();
+    });
+  };
+
+  // A hidden native preview still plays and downloads, so stop it each time
+  // it starts. Media events do not bubble, so this listens in the capture phase.
+  const handleMediaPlaying = (event: Event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLVideoElement) || !target.matches(NATIVE_PREVIEW_VIDEO_SELECTOR)) return;
+    if (isActiveOnCurrentPage()) target.pause?.();
+  };
 
   const preserveOverlaySession = () => {
+    overlay.setPinned(false);
     overlay.hide();
     player.pause();
   };
 
   const discardOverlaySession = () => {
+    overlay.setPinned(false);
     overlay.hide();
     player.reset();
   };
@@ -73,46 +105,61 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
     preserveOverlaySession();
   };
 
-  const getEffectivePlayerHeight = () => Math.max(settings.overlayHeight, WATCH_MIN_OVERLAY_HEIGHT);
-  const getOverlayOuterHeight = () =>
-    getEffectivePlayerHeight() +
-    (settings.showMetadata ? OVERLAY_CHROME_HEIGHT_WITH_METADATA : OVERLAY_CHROME_HEIGHT_NO_METADATA);
+  const player = createPlayerController(playerHost, {
+    onAudioChange: (state) => {
+      settings = { ...settings, defaultMuted: state.muted, defaultVolume: state.volume };
+      debugLog(settings.debug, "audio", state);
+      window.clearTimeout(audioSaveTimer);
+      audioSaveTimer = window.setTimeout(() => {
+        void saveLiveAudioState({ defaultMuted: state.muted, defaultVolume: state.volume }).catch((error) => {
+          debugLog(settings.debug, "audio save failed", error);
+        });
+      }, AUDIO_SAVE_DELAY_MS);
+    },
+    onEscape: () => resetHoverSession()
+  });
+
+  // Shows the overlay for a card and places it beside the card's thumbnail.
+  const showOverlayForCard = (card: HTMLElement) => {
+    const metadata = settings.showMetadata ? extractMetadata(card) : {};
+    const outerHeight = overlay.show({
+      ...metadata,
+      width: settings.overlayWidth,
+      height: settings.overlayHeight
+    });
+
+    const sourceRect = extractThumbnailRect(card) ?? card.getBoundingClientRect();
+    const position = computeOverlayPosition({
+      sourceRect,
+      overlayWidth: settings.overlayWidth,
+      overlayHeight: outerHeight,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      gap: OVERLAY_GAP_PX
+    });
+    overlay.setPosition(position.left, position.top);
+  };
 
   const machine = createHoverStateMachine({
     hoverDelayMs: settings.hoverDelayMs,
     closeDelayMs: settings.closeDelayMs,
     onOpen: (cardId) => {
       const now = Date.now();
-      if (now < scrollBlockedUntil) return;
-      if (now - lastSwitchAt < 300) return;
+      if (now < scrollBlockedUntil) return false;
+      if (now - lastSwitchAt < SWITCH_COOLDOWN_MS) return false;
 
-      const card = cardsById.get(cardId);
-      if (!card || !card.isConnected || !isSupportedCard(card)) return;
+      const card = getCard(cardId);
+      if (!card || !isSupportedCard(card)) return false;
 
       const videoId = extractVideoId(card);
-      if (!videoId) return;
+      if (!videoId) return false;
 
       lastSwitchAt = now;
-
-      const sourceRect = extractThumbnailRect(card) ?? card.getBoundingClientRect();
-      const position = computeOverlayPosition({
-        sourceRect,
-        overlayWidth: settings.overlayWidth,
-        overlayHeight: getOverlayOuterHeight(),
-        viewportWidth: window.innerWidth,
-        viewportHeight: window.innerHeight,
-        scrollX: window.scrollX,
-        scrollY: window.scrollY,
-        gap: 16
-      });
-
-      const metadata = settings.showMetadata ? extractMetadata(card) : {};
-      overlay.show({
-        ...metadata,
-        ...position,
-        width: settings.overlayWidth,
-        height: getEffectivePlayerHeight()
-      });
+      overlay.setPinned(false);
+      showOverlayForCard(card);
+      pauseNativePreview();
 
       debugLog(settings.debug, "open", { cardId, videoId });
       player.open({
@@ -120,6 +167,7 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
         muted: settings.defaultMuted,
         volume: settings.defaultVolume
       });
+      return true;
     },
     onClose: () => {
       debugLog(settings.debug, "close");
@@ -128,37 +176,39 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
   });
 
   const repositionCurrent = () => {
-    if (machine.getSnapshot().mode !== "open") return;
+    const snapshot = machine.getSnapshot();
+    if (snapshot.mode !== "open" || snapshot.pinned || !snapshot.currentCardId) return;
 
-    const cardId = machine.getSnapshot().currentCardId;
-    if (!cardId) return;
-
-    const card = cardsById.get(cardId);
-    if (!card || !card.isConnected) {
-      machine.forceReset();
-      preserveOverlaySession();
+    const card = getCard(snapshot.currentCardId);
+    if (!card) {
+      resetHoverSession();
       return;
     }
 
-    const sourceRect = extractThumbnailRect(card) ?? card.getBoundingClientRect();
-    const position = computeOverlayPosition({
-      sourceRect,
-      overlayWidth: settings.overlayWidth,
-      overlayHeight: getOverlayOuterHeight(),
-      viewportWidth: window.innerWidth,
-      viewportHeight: window.innerHeight,
-      scrollX: window.scrollX,
-      scrollY: window.scrollY,
-      gap: 16
-    });
+    showOverlayForCard(card);
+  };
 
-    const metadata = settings.showMetadata ? extractMetadata(card) : {};
-    overlay.show({
-      ...metadata,
-      ...position,
-      width: settings.overlayWidth,
-      height: getEffectivePlayerHeight()
-    });
+  const isPointerWithinRect = (pointer: { clientX: number; clientY: number } | null, rect: DOMRect) => {
+    if (!pointer) return false;
+    if (!Number.isFinite(pointer.clientX) || !Number.isFinite(pointer.clientY)) return false;
+    if (rect.width <= 0 || rect.height <= 0) return false;
+
+    return (
+      pointer.clientX >= rect.left &&
+      pointer.clientX <= rect.right &&
+      pointer.clientY >= rect.top &&
+      pointer.clientY <= rect.bottom
+    );
+  };
+
+  const isPointerWithinActiveHoverFootprint = (pointer: { clientX: number; clientY: number } | null) => {
+    const snapshot = machine.getSnapshot();
+    if (!snapshot.currentCardId) return false;
+
+    const card = getCard(snapshot.currentCardId);
+    const withinCard = !!card && isPointerWithinRect(pointer, card.getBoundingClientRect());
+    const withinOverlay = isPointerWithinRect(pointer, overlayElement.getBoundingClientRect());
+    return withinCard || withinOverlay;
   };
 
   const reconcilePointerTarget = (
@@ -166,30 +216,24 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
     pointer: { clientX: number; clientY: number } | null = null
   ) => {
     const snapshot = machine.getSnapshot();
-    if (snapshot.mode !== "open" && snapshot.mode !== "closing") return;
+    if (snapshot.mode !== "hover_pending" && snapshot.mode !== "open" && snapshot.mode !== "closing") return;
     if (!snapshot.currentCardId) return;
 
-    const card = cardsById.get(snapshot.currentCardId);
+    const card = getCard(snapshot.currentCardId);
     const withinOverlay = target instanceof Node && overlayElement.contains(target);
+    const withinOverlayByPointer = isPointerWithinRect(pointer, overlayElement.getBoundingClientRect());
     const withinCardByTarget = !!card && target instanceof Node && card.contains(target);
-    const withinCardByPointer =
-      !!card &&
-      !!pointer &&
-      Number.isFinite(pointer.clientX) &&
-      Number.isFinite(pointer.clientY) &&
-      (() => {
-        const rect = card.getBoundingClientRect();
-        if (rect.width <= 0 || rect.height <= 0) return false;
-        return (
-          pointer.clientX >= rect.left &&
-          pointer.clientX <= rect.right &&
-          pointer.clientY >= rect.top &&
-          pointer.clientY <= rect.bottom
-        );
-      })();
+    const withinCardByPointer = !!card && isPointerWithinRect(pointer, card.getBoundingClientRect());
     const withinCard = withinCardByTarget || withinCardByPointer;
 
-    if (withinOverlay || withinCard) {
+    if (snapshot.mode === "hover_pending") {
+      if (!withinCard) {
+        machine.pointerLeft();
+      }
+      return;
+    }
+
+    if (withinOverlay || withinOverlayByPointer || withinCard) {
       machine.pointerEntered(snapshot.currentCardId);
     } else {
       machine.pointerLeft();
@@ -197,22 +241,33 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
   };
 
   const handlePointerOver = (event: PointerEvent) => {
-    if (!isContentPageEnabled(getPageType(), settings)) return;
+    if (!isActiveOnCurrentPage()) return;
     if (Date.now() < scrollBlockedUntil) return;
+    if (machine.getSnapshot().pinned) return;
+
+    lastPointer = {
+      clientX: event.clientX,
+      clientY: event.clientY
+    };
 
     const card = findVideoCardFromTarget(event.target);
     if (!card || !isSupportedCard(card)) return;
 
     if (!card.dataset.yhpCardId) card.dataset.yhpCardId = randomId();
     const cardId = card.dataset.yhpCardId;
-    cardsById.set(cardId, card);
 
     debugLog(settings.debug, "pointerover", cardId);
     machine.pointerEntered(cardId);
   };
 
   const handlePointerOut = (event: PointerEvent) => {
+    lastPointer = {
+      clientX: event.clientX,
+      clientY: event.clientY
+    };
+
     if (!(event.relatedTarget instanceof Node)) {
+      if (machine.getSnapshot().pinned) return;
       resetHoverSession();
       return;
     }
@@ -236,96 +291,148 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
     if (!action) return;
 
     if (action === "close") {
-      machine.forceReset();
-      preserveOverlaySession();
+      resetHoverSession();
+      return;
+    }
+
+    if (action === "pin-toggle") {
+      const snapshot = machine.getSnapshot();
+      if (snapshot.pinned) {
+        machine.unpin();
+        overlay.setPinned(false);
+        reconcilePointerTarget(null, lastPointer);
+      } else {
+        machine.pin();
+        overlay.setPinned(true);
+      }
       return;
     }
   };
 
+  // YouTube is a single-page app. Its own history calls happen in the page's
+  // script context, which a content script cannot patch, so listen for the
+  // navigation events YouTube dispatches on the document instead.
+  const handleNavigateStart = () => {
+    resetHoverSession("discard");
+  };
+
   const handleLocationChange = () => {
+    updateActivePageAttribute();
     if (window.location.href === currentLocation) return;
     currentLocation = window.location.href;
-
-    cardsById.clear();
     resetHoverSession("discard");
   };
 
   const handleScroll = () => {
     scrollBlockedUntil = Date.now() + SCROLL_REOPEN_COOLDOWN_MS;
+    if (machine.getSnapshot().pinned) return;
     resetHoverSession();
   };
 
   const handleWindowExit = () => {
+    if (machine.getSnapshot().pinned) return;
+    if (document.visibilityState !== "hidden" && isPointerWithinActiveHoverFootprint(lastPointer)) {
+      return;
+    }
+
     resetHoverSession();
   };
 
-  if (typeof chrome !== "undefined" && chrome.storage?.onChanged) {
-    chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName !== "local" || !changes.settings?.newValue) return;
+  const handleStorageChange = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
+    if (areaName !== "local" || !changes[SETTINGS_KEY]?.newValue) return;
 
-      settings = clampContentSettings({
-        ...DEFAULT_CONTENT_SETTINGS,
-        ...(changes.settings.newValue as Partial<HoverPlayerSettings>)
-      });
+    settings = normalizeSettings(changes[SETTINGS_KEY].newValue);
+    machine.setDelays({ hoverDelayMs: settings.hoverDelayMs, closeDelayMs: settings.closeDelayMs });
+    updateActivePageAttribute();
 
-      if (!settings.enabled) {
-        resetHoverSession("discard");
-      }
-    });
-  }
+    if (!isActiveOnCurrentPage()) {
+      resetHoverSession("discard");
+      return;
+    }
 
-  const historyAny = history as unknown as Record<string, (...args: unknown[]) => unknown>;
-
-  const wrapHistoryMethod = (method: "pushState" | "replaceState") => {
-    const original = historyAny[method];
-    historyAny[method] = function (...args: unknown[]) {
-      const result = original.apply(this, args);
-      window.dispatchEvent(new Event(LOCATION_CHANGE_EVENT));
-      return result;
-    };
+    repositionCurrent();
   };
 
-  wrapHistoryMethod("pushState");
-  wrapHistoryMethod("replaceState");
+  const hasStorageEvents = typeof chrome !== "undefined" && !!chrome.storage?.onChanged;
+  if (hasStorageEvents) {
+    chrome.storage.onChanged.addListener(handleStorageChange);
+  }
 
-  document.addEventListener("pointerover", handlePointerOver);
-  document.addEventListener("pointerout", handlePointerOut);
-  document.addEventListener("pointermove", (event) => {
-    reconcilePointerTarget(event.target, {
-      clientX: event.clientX,
-      clientY: event.clientY
-    });
-  });
-  document.addEventListener("keydown", handleKeyDown);
+  updateActivePageAttribute();
 
-  overlayElement.addEventListener("pointerenter", () => {
-    const activeId = machine.getSnapshot().currentCardId;
-    if (activeId) machine.pointerEntered(activeId);
-  });
-  overlayElement.addEventListener("pointerleave", (event) => {
-    const related = (event as PointerEvent).relatedTarget;
-    if (related instanceof Node) {
+  document.addEventListener("pointerover", handlePointerOver, { signal });
+  document.addEventListener("pointerout", handlePointerOut, { signal });
+  document.addEventListener(
+    "pointermove",
+    (event) => {
+      lastPointer = {
+        clientX: event.clientX,
+        clientY: event.clientY
+      };
+
+      reconcilePointerTarget(event.target, {
+        clientX: event.clientX,
+        clientY: event.clientY
+      });
+    },
+    { signal }
+  );
+  document.addEventListener("keydown", handleKeyDown, { signal });
+  document.addEventListener("playing", handleMediaPlaying, { capture: true, signal });
+
+  overlayElement.addEventListener(
+    "pointerenter",
+    () => {
       const activeId = machine.getSnapshot().currentCardId;
-      const activeCard = activeId ? cardsById.get(activeId) : null;
-      if (activeCard && activeCard.contains(related)) return;
-    }
-    machine.pointerLeft();
-  });
-  overlayElement.addEventListener("click", handleOverlayClick);
+      if (activeId) machine.pointerEntered(activeId);
+    },
+    { signal }
+  );
+  overlayElement.addEventListener(
+    "pointerleave",
+    (event) => {
+      const pointerEvent = event as PointerEvent;
+      reconcilePointerTarget(pointerEvent.relatedTarget, {
+        clientX: pointerEvent.clientX,
+        clientY: pointerEvent.clientY
+      });
+    },
+    { signal }
+  );
+  overlayElement.addEventListener("click", handleOverlayClick, { signal });
 
-  window.addEventListener("resize", repositionCurrent);
-  window.addEventListener("scroll", handleScroll, { passive: true });
-  window.addEventListener("blur", handleWindowExit);
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") handleWindowExit();
-  });
-  window.addEventListener("popstate", () => {
-    window.dispatchEvent(new Event(LOCATION_CHANGE_EVENT));
-  });
-  window.addEventListener(LOCATION_CHANGE_EVENT, handleLocationChange);
+  window.addEventListener("resize", repositionCurrent, { signal });
+  window.addEventListener("scroll", handleScroll, { passive: true, signal });
+  window.addEventListener("blur", handleWindowExit, { signal });
+  document.addEventListener(
+    "visibilitychange",
+    () => {
+      if (document.visibilityState === "hidden") handleWindowExit();
+    },
+    { signal }
+  );
+  document.addEventListener("yt-navigate-start", handleNavigateStart, { signal });
+  document.addEventListener("yt-navigate-finish", handleLocationChange, { signal });
+  window.addEventListener("popstate", handleLocationChange, { signal });
+
+  return {
+    destroy() {
+      window.clearTimeout(audioSaveTimer);
+      listeners.abort();
+      if (hasStorageEvents) chrome.storage.onChanged.removeListener(handleStorageChange);
+      resetHoverSession("discard");
+      overlayElement.remove();
+      document.documentElement.removeAttribute(ACTIVE_PAGE_ATTRIBUTE);
+    }
+  };
 }
 
-if (typeof chrome !== "undefined" && chrome.storage?.local && !window.__YHP_CONTENT_INSTALLED__) {
+if (
+  typeof chrome !== "undefined" &&
+  chrome.storage?.local &&
+  window.self === window.top &&
+  !window.__YHP_CONTENT_INSTALLED__
+) {
   window.__YHP_CONTENT_INSTALLED__ = true;
-  void getContentSettings().then(bootstrapContentScript);
+  void getSettings().then(bootstrapContentScript);
 }

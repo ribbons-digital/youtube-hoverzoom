@@ -1,39 +1,70 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderOptionsPage } from "../../src/options/main";
+import { DEFAULT_SETTINGS, normalizeSettings, type HoverPlayerSettings } from "../../src/shared/settings";
 
 describe("options page", () => {
-  it("renders MVP toggles and saves edits", async () => {
-    const saveSettings = vi.fn();
+  let saveSettings: ReturnType<typeof vi.fn<(next: Partial<HoverPlayerSettings>) => Promise<HoverPlayerSettings>>>;
+  let resetSettings: ReturnType<typeof vi.fn<() => Promise<HoverPlayerSettings>>>;
+
+  const input = (name: string) => document.querySelector<HTMLInputElement>(`input[name="${name}"]`) as HTMLInputElement;
+  const status = () => document.querySelector("#status")?.textContent ?? "";
+
+  const change = async (element: HTMLInputElement, value: string) => {
+    element.value = value;
+    element.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() => undefined);
+  };
+
+  beforeEach(async () => {
+    saveSettings = vi.fn(async (next) => normalizeSettings({ ...DEFAULT_SETTINGS, ...next }));
+    resetSettings = vi.fn(async () => DEFAULT_SETTINGS);
     document.body.innerHTML = `<div id="app"></div>`;
+    await renderOptionsPage({ settings: { ...DEFAULT_SETTINGS, overlayWidth: 480 }, saveSettings, resetSettings });
+  });
 
-    await renderOptionsPage({
-      settings: {
-        enabled: true,
-        hoverDelayMs: 250,
-        closeDelayMs: 150,
-        defaultMuted: true,
-        defaultVolume: 35,
-        overlayWidth: 480,
-        overlayHeight: 270,
-        showMetadata: true,
-        enableOnHome: true,
-        enableOnSearch: true,
-        enableOnSubscriptions: true,
-        enableOnWatchSidebar: true,
-        enableOnChannelVideos: true,
-        debug: false
-      },
-      saveSettings
-    });
+  it("shows the stored values grouped with units", () => {
+    expect(input("overlayWidth").value).toBe("480");
+    expect(input("enableOnChannelVideos").checked).toBe(true);
+    expect(document.querySelectorAll("fieldset legend")).not.toHaveLength(0);
+    expect(document.body.textContent).toContain("400 to 2000 ms");
+  });
 
-    expect(document.querySelector('input[name="hoverDelayMs"]')).not.toBeNull();
-    expect(document.querySelector('input[name="enableOnChannelVideos"]')).not.toBeNull();
-    expect(document.querySelector('input[name="showMetadata"]')).not.toBeNull();
+  it("saves a valid change and confirms it", async () => {
+    await change(input("defaultVolume"), "55");
 
-    const volume = document.querySelector<HTMLInputElement>('input[name="defaultVolume"]') as HTMLInputElement;
-    volume.value = "55";
-    volume.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(saveSettings).toHaveBeenCalledWith({ defaultVolume: 55 });
+    await vi.waitFor(() => expect(status()).toBe("Saved"));
+  });
 
-    expect(saveSettings).toHaveBeenCalledWith(expect.objectContaining({ defaultVolume: 55 }));
+  it("rejects an invalid number with a message and does not save it", async () => {
+    await change(input("hoverDelayMs"), "50");
+
+    expect(saveSettings).not.toHaveBeenCalled();
+    expect(input("hoverDelayMs").getAttribute("aria-invalid")).toBe("true");
+    expect(document.querySelector("#hoverDelayMs-error")?.textContent).toBe("Enter a whole number from 400 to 2000.");
+    expect(input("hoverDelayMs").value).toBe("50");
+  });
+
+  it("rejects an empty number", async () => {
+    await change(input("overlayHeight"), "");
+
+    expect(saveSettings).not.toHaveBeenCalled();
+    expect(document.querySelector<HTMLElement>("#overlayHeight-error")?.hidden).toBe(false);
+  });
+
+  it("keeps the entered value and shows a lasting error when saving fails", async () => {
+    saveSettings.mockRejectedValueOnce(new Error("quota"));
+
+    await change(input("closeDelayMs"), "300");
+
+    await vi.waitFor(() => expect(status()).toContain("Could not save"));
+    expect(input("closeDelayMs").value).toBe("300");
+  });
+
+  it("resets every field to its default", async () => {
+    document.querySelector<HTMLButtonElement>('button[data-action="reset"]')?.click();
+
+    await vi.waitFor(() => expect(input("overlayWidth").value).toBe(String(DEFAULT_SETTINGS.overlayWidth)));
+    expect(resetSettings).toHaveBeenCalledTimes(1);
   });
 });

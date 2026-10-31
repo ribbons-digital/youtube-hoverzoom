@@ -14,7 +14,10 @@ describe("YouTube selectors", () => {
       <ytd-rich-item-renderer>
         <a id="thumbnail" href="/watch?v=abc12345678"><img /></a>
         <a id="video-title">Example title</a>
-        <ytd-channel-name>Example channel</ytd-channel-name>
+        <ytd-channel-name>
+          <yt-formatted-string id="text">Example channel</yt-formatted-string>
+          <tp-yt-paper-tooltip>Example channel</tp-yt-paper-tooltip>
+        </ytd-channel-name>
       </ytd-rich-item-renderer>
     `;
 
@@ -64,5 +67,74 @@ describe("YouTube selectors", () => {
     const card = document.querySelector("ytd-rich-item-renderer") as HTMLElement;
     const rect = extractThumbnailRect(card);
     expect(rect?.width).toBe(200);
+  });
+
+  it("supports the newer lockup card used by the watch sidebar", () => {
+    document.body.innerHTML = `
+      <yt-lockup-view-model>
+        <a class="yt-lockup-view-model__content-image" href="/watch?v=lockup12345"><img /></a>
+        <div class="yt-lockup-metadata-view-model">
+          <a href="/@demo"><img alt="" /></a>
+          <h3 class="yt-lockup-metadata-view-model__heading-reset">
+            <a class="yt-lockup-metadata-view-model__title" href="/watch?v=lockup12345">Lockup   title</a>
+          </h3>
+          <a href="/@demo">Demo channel</a>
+        </div>
+      </yt-lockup-view-model>
+    `;
+
+    const card = findVideoCardFromTarget(document.querySelector("img"));
+
+    expect(card?.tagName.toLowerCase()).toBe("yt-lockup-view-model");
+    expect(extractVideoId(card as HTMLElement)).toBe("lockup12345");
+    expect(extractMetadata(card as HTMLElement)).toEqual({ title: "Lockup title", channel: "Demo channel" });
+  });
+
+  it("ignores a thumbnail that has no size yet", () => {
+    document.body.innerHTML = `<ytd-rich-item-renderer><a id="thumbnail" href="/watch?v=abc12345678"></a></ytd-rich-item-renderer>`;
+    const card = document.querySelector("ytd-rich-item-renderer") as HTMLElement;
+
+    expect(extractThumbnailRect(card)).toBeNull();
+  });
+
+  it("reads title and channel from the camelCase lockup markup YouTube serves on watch pages", () => {
+    document.body.innerHTML = `
+      <yt-lockup-view-model>
+        <a href="/watch?v=1J4a9cT2lkw&amp;list=RD1J4a9cT2lkw" class="ytLockupViewModelContentImage">
+          <yt-thumbnail-view-model><img alt="" /></yt-thumbnail-view-model>
+        </a>
+        <yt-lockup-metadata-view-model>
+          <h3 class="ytLockupMetadataViewModelHeadingReset">
+            <a href="/watch?v=1J4a9cT2lkw" class="ytLockupMetadataViewModelTitle"><span>Upbeat Lofi Mix</span></a>
+          </h3>
+          <yt-content-metadata-view-model>
+            <div class="ytContentMetadataViewModelMetadataRow"><span>Lofi Shop 24h</span></div>
+            <div class="ytContentMetadataViewModelMetadataRow">
+              <span>1.6m</span><span class="ytContentMetadataViewModelDelimiter"> </span><span>2 years ago</span>
+            </div>
+          </yt-content-metadata-view-model>
+        </yt-lockup-metadata-view-model>
+      </yt-lockup-view-model>
+    `;
+
+    const card = findVideoCardFromTarget(document.querySelector("img")) as HTMLElement;
+
+    expect(extractVideoId(card)).toBe("1J4a9cT2lkw");
+    expect(extractMetadata(card)).toEqual({ title: "Upbeat Lofi Mix", channel: "Lofi Shop 24h" });
+  });
+
+  it("does not report views as the channel when the first row has several values", () => {
+    document.body.innerHTML = `
+      <yt-lockup-view-model>
+        <a href="/watch?v=abc12345678"><img alt="" /></a>
+        <div class="ytContentMetadataViewModelMetadataRow">
+          <span>1.6m views</span><span class="ytContentMetadataViewModelDelimiter"> </span><span>2 years ago</span>
+        </div>
+      </yt-lockup-view-model>
+    `;
+
+    const card = findVideoCardFromTarget(document.querySelector("img")) as HTMLElement;
+
+    expect(extractMetadata(card).channel).toBeUndefined();
   });
 });
