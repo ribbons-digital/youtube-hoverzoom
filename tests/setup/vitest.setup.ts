@@ -12,7 +12,7 @@ if (!cryptoValue || typeof cryptoValue.randomUUID !== "function") {
   Object.defineProperty(globalThis, "crypto", {
     configurable: true,
     value: {
-      ...(cryptoValue ?? {}),
+      ...cryptoValue,
       randomUUID: () => "00000000-0000-4000-8000-000000000000"
     }
   });
