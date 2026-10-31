@@ -17,7 +17,6 @@ import type { HoverPlayerSettings } from "../shared/settings";
 
 const LOCATION_CHANGE_EVENT = "yhp:locationchange";
 const SCROLL_REOPEN_COOLDOWN_MS = 200;
-const WATCH_MIN_OVERLAY_HEIGHT = 720;
 const OVERLAY_CHROME_HEIGHT_WITH_METADATA = 72;
 const OVERLAY_CHROME_HEIGHT_NO_METADATA = 44;
 
@@ -74,7 +73,7 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
     preserveOverlaySession();
   };
 
-  const getEffectivePlayerHeight = () => Math.max(settings.overlayHeight, WATCH_MIN_OVERLAY_HEIGHT);
+  const getEffectivePlayerHeight = () => settings.overlayHeight;
   const getOverlayOuterHeight = () =>
     getEffectivePlayerHeight() +
     (settings.showMetadata ? OVERLAY_CHROME_HEIGHT_WITH_METADATA : OVERLAY_CHROME_HEIGHT_NO_METADATA);
@@ -379,7 +378,12 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
   window.addEventListener(LOCATION_CHANGE_EVENT, handleLocationChange);
 }
 
-if (typeof chrome !== "undefined" && chrome.storage?.local && !window.__YHP_CONTENT_INSTALLED__) {
+if (
+  typeof chrome !== "undefined" &&
+  chrome.storage?.local &&
+  window.self === window.top &&
+  !window.__YHP_CONTENT_INSTALLED__
+) {
   window.__YHP_CONTENT_INSTALLED__ = true;
   void getContentSettings().then(bootstrapContentScript);
 }

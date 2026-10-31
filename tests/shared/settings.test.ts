@@ -7,7 +7,7 @@ describe("settings defaults", () => {
     expect(DEFAULT_SETTINGS.closeDelayMs).toBe(150);
     expect(DEFAULT_SETTINGS.enableOnChannelVideos).toBe(true);
     expect(DEFAULT_SETTINGS.overlayWidth).toBe(960);
-    expect(DEFAULT_SETTINGS.overlayHeight).toBe(720);
+    expect(DEFAULT_SETTINGS.overlayHeight).toBe(540);
   });
 
   it("clamps volume and overlay dimensions to sane bounds", () => {

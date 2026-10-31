@@ -10,7 +10,7 @@ const DEFAULT_SETTINGS: HoverPlayerSettings = {
   defaultMuted: true,
   defaultVolume: 35,
   overlayWidth: 960,
-  overlayHeight: 720,
+  overlayHeight: 540,
   showMetadata: true,
   enableOnHome: true,
   enableOnSearch: true,

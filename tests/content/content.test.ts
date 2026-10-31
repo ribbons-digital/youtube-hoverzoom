@@ -38,7 +38,7 @@ describe("content script orchestration", () => {
     expect(frame?.src).toContain("/watch?v=abc12345678");
   });
 
-  it("uses a taller watch popup even when a shorter height is configured", () => {
+  it("uses the configured overlay height for the player host", () => {
     bootstrapContentScript({
       ...testSettings,
       overlayHeight: 540
@@ -47,7 +47,7 @@ describe("content script orchestration", () => {
     document.querySelector("img")?.dispatchEvent(new PointerEvent("pointerover", { bubbles: true }));
     vi.advanceTimersByTime(testSettings.hoverDelayMs);
 
-    expect(document.querySelector<HTMLElement>(".yhp-player-host")?.style.height).toBe("720px");
+    expect(document.querySelector<HTMLElement>(".yhp-player-host")?.style.height).toBe("540px");
   });
 
   it("does not open if the pointer leaves the browser window during hover delay", () => {

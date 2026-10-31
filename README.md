@@ -15,6 +15,8 @@ A Manifest V3 browser extension that opens a floating YouTube watch surface when
 
 The original embed-based approach hit YouTube playback restrictions for some videos. The current implementation uses a same-site `/watch?v=...` iframe on `youtube.com`, which gives more reliable playback for this project’s hover-preview use case.
 
+Because the iframe is same-origin, the extension injects a cleanup stylesheet into the loaded watch page that hides non-player chrome (masthead, sidebar, comments, and live chat — whose close button misbehaves inside a constrained iframe), so the preview shows only the player.
+
 Tradeoffs:
 
 - Playback is more reliable than `/embed`
