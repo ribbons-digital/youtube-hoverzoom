@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPlayerController } from "../../src/content/player-controller";
 
 describe("player controller", () => {
@@ -16,6 +16,7 @@ describe("player controller", () => {
     expect(frame).not.toBeNull();
     expect(frame?.src).toContain("/watch?v=abc12345678");
     expect(frame?.src).toContain("autoplay=1");
+    expect(frame?.src).not.toContain("mute=");
   });
 
   it("reuses iframe and updates src when switching videos", () => {
@@ -176,5 +177,125 @@ describe("player controller", () => {
     player.reset();
 
     expect(frame.src).toBe("about:blank");
+  });
+
+  const addVideo = (doc: Document) => {
+    const moviePlayer = doc.createElement("div");
+    moviePlayer.id = "movie_player";
+    // JSDOM does not implement media playback.
+    const video = Object.assign(doc.createElement("video"), { play: vi.fn(async () => undefined), pause: vi.fn() });
+    moviePlayer.append(video);
+    doc.body.append(moviePlayer);
+    return video;
+  };
+
+  describe("audio", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const openWithVideo = (onAudioChange = vi.fn()) => {
+      const host = document.querySelector("#yhp-player-host") as HTMLElement;
+      const player = createPlayerController(host, { onAudioChange });
+      player.open({ videoId: "abc12345678", muted: false, volume: 60 });
+      const frame = host.querySelector<HTMLIFrameElement>("iframe") as HTMLIFrameElement;
+      const doc = stubWatchDocument(frame);
+      const video = addVideo(doc);
+      frame.dispatchEvent(new Event("load"));
+      return { player, frame, doc, video, onAudioChange };
+    };
+
+    const changeVolume = (video: HTMLVideoElement, volume: number, muted = video.muted) => {
+      video.volume = volume;
+      video.muted = muted;
+      video.dispatchEvent(new Event("volumechange"));
+    };
+
+    it("applies the requested mute and volume when playback starts", () => {
+      const { video } = openWithVideo();
+      video.muted = true;
+      video.volume = 1;
+
+      video.dispatchEvent(new Event("playing"));
+
+      expect(video.muted).toBe(false);
+      expect(video.volume).toBeCloseTo(0.6);
+    });
+
+    it("keeps the requested audio when YouTube changes it right after playback starts", () => {
+      const { video, onAudioChange } = openWithVideo();
+      video.dispatchEvent(new Event("playing"));
+
+      changeVolume(video, 1, true);
+
+      expect(video.muted).toBe(false);
+      expect(video.volume).toBeCloseTo(0.6);
+      expect(onAudioChange).not.toHaveBeenCalled();
+    });
+
+    it("reports audio changes the viewer makes in the preview", () => {
+      const { video, onAudioChange } = openWithVideo();
+      video.dispatchEvent(new Event("playing"));
+      vi.advanceTimersByTime(1001);
+
+      changeVolume(video, 0.8);
+
+      expect(onAudioChange).toHaveBeenCalledWith({ muted: false, volume: 80 });
+    });
+
+    it("keeps the viewer's audio when the same video resumes", () => {
+      const { player, video } = openWithVideo();
+      video.dispatchEvent(new Event("playing"));
+      vi.advanceTimersByTime(1001);
+      changeVolume(video, 0.8);
+
+      player.pause();
+      player.open({ videoId: "abc12345678", muted: true, volume: 35 });
+      video.dispatchEvent(new Event("playing"));
+
+      expect(video.muted).toBe(false);
+      expect(video.volume).toBeCloseTo(0.8);
+    });
+  });
+
+  it("calls onEscape when Escape is pressed inside the preview", () => {
+    const onEscape = vi.fn();
+    const host = document.querySelector("#yhp-player-host") as HTMLElement;
+    const player = createPlayerController(host, { onEscape });
+
+    player.open({ videoId: "abc12345678", muted: true, volume: 35 });
+    const frame = host.querySelector<HTMLIFrameElement>("iframe") as HTMLIFrameElement;
+    const doc = stubWatchDocument(frame);
+    frame.dispatchEvent(new Event("load"));
+
+    doc.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+    expect(onEscape).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops cleanup polling once the watch page is prepared", () => {
+    vi.useFakeTimers();
+    try {
+      const host = document.querySelector("#yhp-player-host") as HTMLElement;
+      const player = createPlayerController(host);
+
+      player.open({ videoId: "abc12345678", muted: true, volume: 35 });
+      const frame = host.querySelector<HTMLIFrameElement>("iframe") as HTMLIFrameElement;
+      const doc = stubWatchDocument(frame);
+      addVideo(doc);
+      vi.advanceTimersByTime(250);
+      expect(doc.getElementById("yhp-watch-cleanup")).not.toBeNull();
+
+      doc.getElementById("yhp-watch-cleanup")?.remove();
+      vi.advanceTimersByTime(1000);
+
+      expect(doc.getElementById("yhp-watch-cleanup")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

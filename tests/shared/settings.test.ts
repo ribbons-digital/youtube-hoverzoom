@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, clampSettings, isPageEnabled, type HoverPlayerSettings } from "../../src/shared/settings";
+import {
+  DEFAULT_SETTINGS,
+  clampSettings,
+  isPageEnabled,
+  normalizeSettings,
+  type HoverPlayerSettings
+} from "../../src/shared/settings";
 
 describe("settings defaults", () => {
   it("ships with the approved MVP defaults", () => {
@@ -33,5 +39,32 @@ describe("settings defaults", () => {
 
     expect(isPageEnabled("home", disabledSearch)).toBe(true);
     expect(isPageEnabled("search", disabledSearch)).toBe(false);
+  });
+
+  it("caps delays and rounds numbers to whole values", () => {
+    const clamped = clampSettings({ ...DEFAULT_SETTINGS, hoverDelayMs: 99999, closeDelayMs: 150.6 });
+
+    expect(clamped.hoverDelayMs).toBe(2000);
+    expect(clamped.closeDelayMs).toBe(151);
+  });
+
+  it("replaces stored values of the wrong type with defaults", () => {
+    const settings = normalizeSettings({
+      enabled: "yes",
+      hoverDelayMs: null,
+      overlayWidth: Number.NaN,
+      defaultVolume: 80,
+      unknownKey: true
+    });
+
+    expect(settings.enabled).toBe(DEFAULT_SETTINGS.enabled);
+    expect(settings.hoverDelayMs).toBe(DEFAULT_SETTINGS.hoverDelayMs);
+    expect(settings.overlayWidth).toBe(DEFAULT_SETTINGS.overlayWidth);
+    expect(settings.defaultVolume).toBe(80);
+    expect(settings).not.toHaveProperty("unknownKey");
+  });
+
+  it("returns defaults when nothing is stored", () => {
+    expect(normalizeSettings(undefined)).toEqual(DEFAULT_SETTINGS);
   });
 });

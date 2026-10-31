@@ -1,12 +1,28 @@
 import type { SupportedPageType } from "../shared/page-types";
 import { parseVideoId } from "../shared/youtube";
 
+// yt-lockup-view-model is YouTube's newer card element. It replaces the
+// older renderers on some surfaces, such as the watch page sidebar.
 const CARD_SELECTOR = [
   "ytd-rich-item-renderer",
   "ytd-video-renderer",
   "ytd-grid-video-renderer",
-  "ytd-compact-video-renderer"
+  "ytd-compact-video-renderer",
+  "yt-lockup-view-model"
 ].join(", ");
+
+const THUMBNAIL_SELECTOR = [
+  "#thumbnail",
+  'ytd-thumbnail a[href*="/watch"]',
+  'a[class*="content-image"]',
+  "yt-thumbnail-view-model",
+  'a[href*="/watch"]'
+].join(", ");
+
+const TITLE_SELECTOR = ["#video-title", '[class*="lockup-metadata-view-model"][class*="title"]', "h3"].join(", ");
+
+// ytd-channel-name also holds a tooltip with the same name, so read only its text node.
+const CHANNEL_SELECTOR = ["ytd-channel-name #text", "#channel-name #text"].join(", ");
 
 export function findVideoCardFromTarget(target: EventTarget | null): HTMLElement | null {
   return target instanceof Element ? target.closest<HTMLElement>(CARD_SELECTOR) : null;
@@ -27,15 +43,34 @@ export function isSupportedCard(card: HTMLElement): boolean {
 }
 
 export function extractThumbnailRect(card: HTMLElement): DOMRect | null {
-  const thumb = card.querySelector<HTMLElement>('#thumbnail, ytd-thumbnail a[href*="/watch"], a[href*="/watch"]');
-  return thumb?.getBoundingClientRect() ?? null;
+  const thumb = card.querySelector<HTMLElement>(THUMBNAIL_SELECTOR);
+  const rect = thumb?.getBoundingClientRect();
+  return rect && rect.width > 0 && rect.height > 0 ? rect : null;
+}
+
+function readText(element: Element | null | undefined) {
+  const text = element?.textContent?.replace(/\s+/g, " ").trim();
+  return text || undefined;
+}
+
+function extractChannel(card: HTMLElement) {
+  const named = readText(card.querySelector(CHANNEL_SELECTOR));
+  if (named) return named;
+
+  // Newer cards only link to the channel; skip avatar links, which have no text.
+  const links = card.querySelectorAll('a[href^="/@"], a[href^="/channel/"]');
+  for (const link of links) {
+    const text = readText(link);
+    if (text) return text;
+  }
+  return undefined;
 }
 
 export function extractMetadata(card: HTMLElement): { title?: string; channel?: string } {
-  const title = card.querySelector<HTMLElement>("#video-title")?.textContent?.trim() ?? undefined;
-  const channel =
-    card.querySelector<HTMLElement>("ytd-channel-name, #channel-name")?.textContent?.trim() ?? undefined;
-  return { title, channel };
+  return {
+    title: readText(card.querySelector(TITLE_SELECTOR)),
+    channel: extractChannel(card)
+  };
 }
 
 export function getPageType(url = new URL(window.location.href)): SupportedPageType {

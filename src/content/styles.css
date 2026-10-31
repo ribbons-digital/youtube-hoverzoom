@@ -3,6 +3,17 @@
   z-index: 2147483647;
 }
 
+#yhp-overlay[data-pinned="true"] {
+  position: fixed;
+}
+
+/* YouTube's own inline preview would play beside ours, so hide it while the
+   extension is active on the current page. */
+html[data-yhp-active] ytd-video-preview,
+html[data-yhp-active] #video-preview {
+  display: none !important;
+}
+
 .yhp-shell {
   display: grid;
   grid-template-rows: auto auto auto;
@@ -38,6 +49,11 @@
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 
+.yhp-controls button:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+
 .yhp-controls button:hover {
   background: rgba(255, 255, 255, 0.15);
   border-color: rgba(255, 255, 255, 0.35);
@@ -59,4 +75,8 @@
   font-size: 12px;
   opacity: 0.85;
   min-height: 18px;
+}
+
+.yhp-meta[hidden] {
+  display: none;
 }

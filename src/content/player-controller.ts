@@ -2,6 +2,10 @@ const YT_WATCH_ORIGIN = "https://www.youtube.com";
 const CLOSED_PLAYER_SRC = "about:blank";
 const CLEANUP_STYLE_ID = "yhp-watch-cleanup";
 const CLEANUP_POLL_INTERVAL_MS = 200;
+const CLEANUP_POLL_TIMEOUT_MS = 20000;
+// YouTube applies its own saved volume shortly after playback starts.
+// Changes inside this window are YouTube's, not the viewer's, so ours wins.
+const AUDIO_GUARD_MS = 1000;
 
 // Strips watch-page chrome so the preview shows only the player. Live chat is
 // the critical one: its close button is broken inside a constrained iframe.
@@ -62,33 +66,109 @@ const CLEANUP_CSS = `
   }
 `;
 
-type PlayerOpenArgs = {
-  videoId: string;
+export type AudioState = {
   muted: boolean;
   volume: number;
 };
 
-function buildWatchUrl(videoId: string, muted: boolean): string {
+type PlayerOpenArgs = AudioState & {
+  videoId: string;
+};
+
+type PlayerControllerOptions = {
+  // Called when the viewer changes mute or volume inside the preview.
+  onAudioChange?: (state: AudioState) => void;
+  // Called when the viewer presses Escape while focus is inside the preview.
+  onEscape?: () => void;
+};
+
+function buildWatchUrl(videoId: string): string {
   const url = new URL("/watch", YT_WATCH_ORIGIN);
   url.searchParams.set("v", videoId);
   url.searchParams.set("autoplay", "1");
   url.searchParams.set("playsinline", "1");
-  if (muted) url.searchParams.set("mute", "1");
   return url.toString();
 }
 
-export function createPlayerController(host: HTMLElement) {
-  let iframe: HTMLIFrameElement | null = null;
-  let currentVideoId: string | null = null;
-  let currentMuted = true;
-  let cleanupTimer: ReturnType<typeof setInterval> | null = null;
+function isEditableTarget(target: EventTarget | null) {
+  const element = target as Element | null;
+  return typeof element?.matches === "function" && element.matches("input, textarea, [contenteditable='true']");
+}
 
+export function createPlayerController(host: HTMLElement, options: PlayerControllerOptions = {}) {
+  let iframe: HTMLIFrameElement | null = null;
+  let cleanupTimer: ReturnType<typeof setInterval> | null = null;
+  let cleanupDeadline = 0;
+  // The document that was in the frame before the latest src change. It is
+  // skipped until the new watch page replaces it.
+  let staleDocument: Document | null = null;
+  let hookedVideo: HTMLVideoElement | null = null;
+  let pendingAudio: AudioState | null = null;
+  let lastAudio: AudioState | null = null;
+  let audioGuardUntil = 0;
+  const hookedDocuments = new WeakSet<Document>();
+
+  const readAudio = (video: HTMLVideoElement): AudioState => ({
+    muted: video.muted,
+    volume: Math.round(video.volume * 100)
+  });
+
+  const writeAudio = (video: HTMLVideoElement, state: AudioState) => {
+    video.muted = state.muted;
+    video.volume = state.volume / 100;
+  };
+
+  const applyPendingAudio = (video: HTMLVideoElement) => {
+    if (!pendingAudio) return;
+    lastAudio = pendingAudio;
+    pendingAudio = null;
+    audioGuardUntil = Date.now() + AUDIO_GUARD_MS;
+    writeAudio(video, lastAudio);
+  };
+
+  const handleVolumeChange = (video: HTMLVideoElement) => {
+    if (pendingAudio) return;
+
+    const state = readAudio(video);
+    if (lastAudio && state.muted === lastAudio.muted && state.volume === lastAudio.volume) return;
+
+    if (lastAudio && Date.now() < audioGuardUntil) {
+      writeAudio(video, lastAudio);
+      return;
+    }
+
+    lastAudio = state;
+    options.onAudioChange?.(state);
+  };
+
+  const hookVideo = (video: HTMLVideoElement) => {
+    if (video === hookedVideo) return;
+    hookedVideo = video;
+    // A new video element without a requested state (for example after a
+    // full reload inside the frame) keeps the last known audio state.
+    pendingAudio ??= lastAudio;
+    video.addEventListener("playing", () => applyPendingAudio(video));
+    video.addEventListener("volumechange", () => handleVolumeChange(video));
+    if (!video.paused) applyPendingAudio(video);
+  };
+
+  const hookDocument = (doc: Document) => {
+    if (hookedDocuments.has(doc)) return;
+    hookedDocuments.add(doc);
+    doc.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || isEditableTarget(event.target)) return;
+      options.onEscape?.();
+    });
+  };
+
+  // Returns true once the watch page is fully prepared: cleanup styles are in
+  // place and the video element is hooked for audio handling.
   const applyWatchCleanup = () => {
-    if (!iframe) return;
+    if (!iframe) return false;
 
     try {
       const doc = iframe.contentDocument;
-      if (!doc?.head) return;
+      if (!doc?.head || doc === staleDocument) return false;
 
       if (!doc.getElementById(CLEANUP_STYLE_ID)) {
         const style = doc.createElement("style");
@@ -96,6 +176,7 @@ export function createPlayerController(host: HTMLElement) {
         style.textContent = CLEANUP_CSS;
         doc.head.append(style);
       }
+      hookDocument(doc);
 
       doc.querySelector("ytd-live-chat-frame")?.setAttribute("collapsed", "");
 
@@ -106,8 +187,14 @@ export function createPlayerController(host: HTMLElement) {
         moviePlayer.dataset.yhpResized = "true";
         iframe.contentWindow?.dispatchEvent(new Event("resize"));
       }
+
+      const video = doc.querySelector<HTMLVideoElement>("#movie_player video, video");
+      if (!video) return false;
+      hookVideo(video);
+      return true;
     } catch {
       // Frame is detached or (unexpectedly) cross-origin; nothing to clean up.
+      return false;
     }
   };
 
@@ -119,10 +206,14 @@ export function createPlayerController(host: HTMLElement) {
 
   // The style node must be re-injected whenever the iframe gets a fresh
   // document. The load event alone fires too late (chat would flash in), so
-  // poll while a watch page is loaded and inject as soon as <head> exists.
+  // poll until the watch page is prepared, then stop.
   const startCleanupPolling = () => {
     stopCleanupPolling();
-    cleanupTimer = setInterval(applyWatchCleanup, CLEANUP_POLL_INTERVAL_MS);
+    if (applyWatchCleanup()) return;
+    cleanupDeadline = Date.now() + CLEANUP_POLL_TIMEOUT_MS;
+    cleanupTimer = setInterval(() => {
+      if (applyWatchCleanup() || Date.now() > cleanupDeadline) stopCleanupPolling();
+    }, CLEANUP_POLL_INTERVAL_MS);
   };
 
   const ensureIframe = () => {
@@ -134,14 +225,21 @@ export function createPlayerController(host: HTMLElement) {
     iframe.style.width = "100%";
     iframe.style.height = "100%";
     iframe.style.border = "0";
-    iframe.addEventListener("load", applyWatchCleanup);
+    iframe.addEventListener("load", () => {
+      applyWatchCleanup();
+    });
     host.replaceChildren(iframe);
     return iframe;
   };
 
-  const loadWatchSurface = () => {
-    if (!iframe || !currentVideoId) return;
-    iframe.src = buildWatchUrl(currentVideoId, currentMuted);
+  const loadVideo = (frame: HTMLIFrameElement, src: string) => {
+    try {
+      staleDocument = frame.contentDocument;
+    } catch {
+      staleDocument = null;
+    }
+    hookedVideo = null;
+    frame.src = src;
   };
 
   const getEmbeddedVideo = () => {
@@ -172,26 +270,21 @@ export function createPlayerController(host: HTMLElement) {
   };
 
   return {
-    open({ videoId, muted }: PlayerOpenArgs) {
+    // A different video loads with the requested audio state. The same video
+    // resumes where it stopped and keeps the audio the viewer left it with.
+    open({ videoId, muted, volume }: PlayerOpenArgs) {
       const frame = ensureIframe();
-      currentVideoId = videoId;
-      currentMuted = muted;
 
-      const nextSrc = buildWatchUrl(videoId, muted);
+      const nextSrc = buildWatchUrl(videoId);
       if (frame.src !== nextSrc) {
-        frame.src = nextSrc;
+        pendingAudio = { muted, volume };
+        loadVideo(frame, nextSrc);
         startCleanupPolling();
         return;
       }
 
       startCleanupPolling();
       resumeEmbeddedVideo();
-    },
-
-    play() {
-      startCleanupPolling();
-      if (resumeEmbeddedVideo()) return;
-      loadWatchSurface();
     },
 
     pause() {
@@ -202,14 +295,7 @@ export function createPlayerController(host: HTMLElement) {
     reset() {
       stopCleanupPolling();
       if (!iframe) return;
-      iframe.src = CLOSED_PLAYER_SRC;
-      currentVideoId = null;
-    },
-
-    mute() {},
-
-    unmute() {},
-
-    setVolume() {}
+      loadVideo(iframe, CLOSED_PLAYER_SRC);
+    }
   };
 }

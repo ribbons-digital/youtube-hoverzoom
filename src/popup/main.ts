@@ -23,7 +23,7 @@ export async function renderPopup({ settings, saveSettings, openOptionsPage }: R
         <div class="yhp-popup-actions">
           <button type="button" data-action="open-settings">Open settings</button>
         </div>
-        <p class="yhp-popup-status" id="status"></p>
+        <p class="yhp-popup-status" id="status" role="status" aria-live="polite"></p>
       </div>
     </div>
   `;
@@ -34,8 +34,15 @@ export async function renderPopup({ settings, saveSettings, openOptionsPage }: R
   if (!status || !enabled || !button) return;
 
   enabled.addEventListener("change", async () => {
-    await saveSettings({ enabled: enabled.checked });
-    status.textContent = enabled.checked ? "Enabled" : "Disabled";
+    try {
+      await saveSettings({ enabled: enabled.checked });
+      status.textContent = enabled.checked ? "Previews are on" : "Previews are off";
+      delete status.dataset.kind;
+    } catch {
+      enabled.checked = !enabled.checked;
+      status.textContent = "Could not save. Try again.";
+      status.dataset.kind = "error";
+    }
   });
 
   button.addEventListener("click", async () => {
