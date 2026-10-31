@@ -14,12 +14,27 @@ const CARD_SELECTOR = [
 const THUMBNAIL_SELECTOR = [
   "#thumbnail",
   'ytd-thumbnail a[href*="/watch"]',
+  'a[class*="ContentImage"]',
   'a[class*="content-image"]',
   "yt-thumbnail-view-model",
   'a[href*="/watch"]'
 ].join(", ");
 
-const TITLE_SELECTOR = ["#video-title", '[class*="lockup-metadata-view-model"][class*="title"]', "h3"].join(", ");
+// Newer cards use camelCase classes (ytLockupMetadataViewModelTitle); older
+// builds used BEM classes (yt-lockup-metadata-view-model__title).
+const TITLE_SELECTOR = [
+  "#video-title",
+  '[class*="LockupMetadataViewModelTitle"]',
+  '[class*="lockup-metadata-view-model"][class*="title"]',
+  "h3"
+].join(", ");
+
+const METADATA_ROW_SELECTOR = [
+  '[class*="ContentMetadataViewModelMetadataRow"]',
+  '[class*="content-metadata-view-model"][class*="metadata-row"]'
+].join(", ");
+
+const METADATA_DELIMITER_SELECTOR = '[class*="Delimiter"], [class*="delimiter"]';
 
 // ytd-channel-name also holds a tooltip with the same name, so read only its text node.
 const CHANNEL_SELECTOR = ["ytd-channel-name #text", "#channel-name #text"].join(", ");
@@ -57,13 +72,18 @@ function extractChannel(card: HTMLElement) {
   const named = readText(card.querySelector(CHANNEL_SELECTOR));
   if (named) return named;
 
-  // Newer cards only link to the channel; skip avatar links, which have no text.
+  // Newer cards may link to the channel; skip avatar links, which have no text.
   const links = card.querySelectorAll('a[href^="/@"], a[href^="/channel/"]');
   for (const link of links) {
     const text = readText(link);
     if (text) return text;
   }
-  return undefined;
+
+  // Otherwise the channel is the first metadata row, when that row holds a
+  // single value. On channel pages the first row holds views and age instead.
+  const firstRow = card.querySelector(METADATA_ROW_SELECTOR);
+  if (!firstRow || firstRow.querySelector(METADATA_DELIMITER_SELECTOR)) return undefined;
+  return readText(firstRow);
 }
 
 export function extractMetadata(card: HTMLElement): { title?: string; channel?: string } {

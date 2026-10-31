@@ -16,6 +16,8 @@ import { getSettings, saveLiveAudioState, SETTINGS_KEY } from "../shared/storage
 
 const SCROLL_REOPEN_COOLDOWN_MS = 200;
 const SWITCH_COOLDOWN_MS = 300;
+// Dragging the volume slider fires many changes; save only the final value.
+const AUDIO_SAVE_DELAY_MS = 400;
 const OVERLAY_GAP_PX = 16;
 const ACTIVE_PAGE_ATTRIBUTE = "data-yhp-active";
 const NATIVE_PREVIEW_VIDEO_SELECTOR = "ytd-video-preview video, #video-preview video";
@@ -43,6 +45,7 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
   let lastSwitchAt = 0;
   let scrollBlockedUntil = 0;
   let lastPointer: { clientX: number; clientY: number } | null = null;
+  let audioSaveTimer: number | undefined;
 
   // Removes every listener in destroy(), so tests and re-injection start clean.
   const listeners = new AbortController();
@@ -72,6 +75,14 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
     });
   };
 
+  // A hidden native preview still plays and downloads, so stop it each time
+  // it starts. Media events do not bubble, so this listens in the capture phase.
+  const handleMediaPlaying = (event: Event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLVideoElement) || !target.matches(NATIVE_PREVIEW_VIDEO_SELECTOR)) return;
+    if (isActiveOnCurrentPage()) target.pause?.();
+  };
+
   const preserveOverlaySession = () => {
     overlay.setPinned(false);
     overlay.hide();
@@ -98,9 +109,12 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
     onAudioChange: (state) => {
       settings = { ...settings, defaultMuted: state.muted, defaultVolume: state.volume };
       debugLog(settings.debug, "audio", state);
-      void saveLiveAudioState({ defaultMuted: state.muted, defaultVolume: state.volume }).catch((error) => {
-        debugLog(settings.debug, "audio save failed", error);
-      });
+      window.clearTimeout(audioSaveTimer);
+      audioSaveTimer = window.setTimeout(() => {
+        void saveLiveAudioState({ defaultMuted: state.muted, defaultVolume: state.volume }).catch((error) => {
+          debugLog(settings.debug, "audio save failed", error);
+        });
+      }, AUDIO_SAVE_DELAY_MS);
     },
     onEscape: () => resetHoverSession()
   });
@@ -364,6 +378,7 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
     { signal }
   );
   document.addEventListener("keydown", handleKeyDown, { signal });
+  document.addEventListener("playing", handleMediaPlaying, { capture: true, signal });
 
   overlayElement.addEventListener(
     "pointerenter",
@@ -402,6 +417,7 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
 
   return {
     destroy() {
+      window.clearTimeout(audioSaveTimer);
       listeners.abort();
       if (hasStorageEvents) chrome.storage.onChanged.removeListener(handleStorageChange);
       resetHoverSession("discard");

@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapContentScript as bootstrap } from "../../src/content/content";
+import { installPageBridge } from "../../src/content/page-bridge";
 import { DEFAULT_SETTINGS, type HoverPlayerSettings } from "../../src/shared/settings";
+import { addFakeYouTubePlayer } from "../helpers/fake-youtube-player";
 
 type StorageListener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => void;
 
@@ -289,6 +291,22 @@ describe("content script orchestration", () => {
     expect(isOverlayHidden()).toBe(true);
   });
 
+  it("stops YouTube's own inline preview whenever it starts on an active page", () => {
+    document.body.insertAdjacentHTML("beforeend", `<ytd-video-preview><video></video></ytd-video-preview>`);
+    const nativeVideo = document.querySelector("ytd-video-preview video") as HTMLVideoElement;
+    const pause = vi.fn();
+    Object.assign(nativeVideo, { pause });
+    bootstrapContentScript(testSettings);
+
+    nativeVideo.dispatchEvent(new Event("playing"));
+    expect(pause).toHaveBeenCalledTimes(1);
+
+    window.history.pushState({}, "", "/feed/history");
+    document.dispatchEvent(new Event("yt-navigate-finish"));
+    nativeVideo.dispatchEvent(new Event("playing"));
+    expect(pause).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps a pinned preview open while the page scrolls", () => {
     bootstrapContentScript(testSettings);
 
@@ -381,31 +399,35 @@ describe("content script orchestration", () => {
     expect(isOverlayHidden()).toBe(false);
   });
 
-  it("saves mute and volume changes made inside the preview", async () => {
+  it("saves mute and volume changes made inside the preview once the viewer stops changing them", async () => {
     const { set } = installChromeStub();
-    bootstrapContentScript(testSettings);
+    const removeBridge = installPageBridge();
+    try {
+      bootstrapContentScript(testSettings);
 
-    hoverCard();
-    vi.advanceTimersByTime(testSettings.hoverDelayMs);
+      hoverCard();
+      vi.advanceTimersByTime(testSettings.hoverDelayMs);
 
-    const frame = document.querySelector<HTMLIFrameElement>("#yhp-player-host iframe") as HTMLIFrameElement;
-    const doc = document.implementation.createHTMLDocument("watch");
-    Object.defineProperty(frame, "contentDocument", { value: doc, configurable: true });
-    Object.defineProperty(frame, "contentWindow", { value: { dispatchEvent: vi.fn() }, configurable: true });
-    const video = Object.assign(doc.createElement("video"), { play: vi.fn(async () => undefined), pause: vi.fn() });
-    doc.body.append(video);
-    frame.dispatchEvent(new Event("load"));
+      const frame = document.querySelector<HTMLIFrameElement>("#yhp-player-host iframe") as HTMLIFrameElement;
+      const doc = document.implementation.createHTMLDocument("watch");
+      Object.defineProperty(frame, "contentDocument", { value: doc, configurable: true });
+      Object.defineProperty(frame, "contentWindow", { value: { dispatchEvent: vi.fn() }, configurable: true });
+      const { viewerChanges } = addFakeYouTubePlayer(doc);
+      frame.dispatchEvent(new Event("load"));
 
-    video.dispatchEvent(new Event("playing"));
-    vi.advanceTimersByTime(1001);
-    video.muted = false;
-    video.volume = 0.8;
-    video.dispatchEvent(new Event("volumechange"));
+      vi.advanceTimersByTime(1001);
+      viewerChanges({ muted: false, volume: 70 });
+      viewerChanges({ volume: 80 });
+      vi.advanceTimersByTime(400);
 
-    await vi.waitFor(() => {
-      expect(set).toHaveBeenCalledWith({
-        settings: expect.objectContaining({ defaultMuted: false, defaultVolume: 80 })
+      await vi.waitFor(() => {
+        expect(set).toHaveBeenCalledTimes(1);
+        expect(set).toHaveBeenCalledWith({
+          settings: expect.objectContaining({ defaultMuted: false, defaultVolume: 80 })
+        });
       });
-    });
+    } finally {
+      removeBridge();
+    }
   });
 });

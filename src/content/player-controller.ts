@@ -1,3 +1,5 @@
+import { PLAYER_COMMAND_EVENT, PLAYER_STATE_EVENT, parseAudioState, type AudioState, type PlayerCommand } from "./player-bridge";
+
 const YT_WATCH_ORIGIN = "https://www.youtube.com";
 const CLOSED_PLAYER_SRC = "about:blank";
 const CLEANUP_STYLE_ID = "yhp-watch-cleanup";
@@ -66,11 +68,6 @@ const CLEANUP_CSS = `
   }
 `;
 
-export type AudioState = {
-  muted: boolean;
-  volume: number;
-};
-
 type PlayerOpenArgs = AudioState & {
   videoId: string;
 };
@@ -106,34 +103,57 @@ export function createPlayerController(host: HTMLElement, options: PlayerControl
   let pendingAudio: AudioState | null = null;
   let lastAudio: AudioState | null = null;
   let audioGuardUntil = 0;
+  let bridgeReply: AudioState | null = null;
+  let applyingAudio = false;
   const hookedDocuments = new WeakSet<Document>();
 
-  const readAudio = (video: HTMLVideoElement): AudioState => ({
-    muted: video.muted,
-    volume: Math.round(video.volume * 100)
-  });
-
-  const writeAudio = (video: HTMLVideoElement, state: AudioState) => {
-    video.muted = state.muted;
-    video.volume = state.volume / 100;
+  // Sends a command to the page bridge and returns the player's audio state,
+  // or null while the player API is not ready. The bridge replies synchronously.
+  const sendPlayerCommand = (command: PlayerCommand) => {
+    if (!iframe) return null;
+    bridgeReply = null;
+    iframe.dispatchEvent(new CustomEvent(PLAYER_COMMAND_EVENT, { detail: JSON.stringify(command), bubbles: true }));
+    return bridgeReply;
   };
 
-  const applyPendingAudio = (video: HTMLVideoElement) => {
-    if (!pendingAudio) return;
+  const sameAudio = (a: AudioState | null, b: AudioState | null) =>
+    !!a && !!b && a.muted === b.muted && a.volume === b.volume;
+
+  // Our own changes fire volumechange too; ignore those while they apply.
+  const applyAudio = (state: AudioState) => {
+    applyingAudio = true;
+    try {
+      return sendPlayerCommand({ type: "apply", ...state });
+    } finally {
+      applyingAudio = false;
+    }
+  };
+
+  // Applies the requested audio once playback has started, because YouTube
+  // sets up its own volume first. Returns true when nothing is left to apply.
+  const tryApplyPendingAudio = () => {
+    if (!pendingAudio) return true;
+    if (!hookedVideo || hookedVideo.paused) return false;
+    if (!applyAudio(pendingAudio)) return false;
+
     lastAudio = pendingAudio;
     pendingAudio = null;
     audioGuardUntil = Date.now() + AUDIO_GUARD_MS;
-    writeAudio(video, lastAudio);
+    return true;
   };
 
-  const handleVolumeChange = (video: HTMLVideoElement) => {
-    if (pendingAudio) return;
+  const handleVolumeChange = () => {
+    if (applyingAudio) return;
+    if (pendingAudio) {
+      tryApplyPendingAudio();
+      return;
+    }
 
-    const state = readAudio(video);
-    if (lastAudio && state.muted === lastAudio.muted && state.volume === lastAudio.volume) return;
+    const state = sendPlayerCommand({ type: "read" });
+    if (!state || sameAudio(state, lastAudio)) return;
 
     if (lastAudio && Date.now() < audioGuardUntil) {
-      writeAudio(video, lastAudio);
+      applyAudio(lastAudio);
       return;
     }
 
@@ -147,9 +167,8 @@ export function createPlayerController(host: HTMLElement, options: PlayerControl
     // A new video element without a requested state (for example after a
     // full reload inside the frame) keeps the last known audio state.
     pendingAudio ??= lastAudio;
-    video.addEventListener("playing", () => applyPendingAudio(video));
-    video.addEventListener("volumechange", () => handleVolumeChange(video));
-    if (!video.paused) applyPendingAudio(video);
+    video.addEventListener("playing", tryApplyPendingAudio);
+    video.addEventListener("volumechange", handleVolumeChange);
   };
 
   const hookDocument = (doc: Document) => {
@@ -162,7 +181,7 @@ export function createPlayerController(host: HTMLElement, options: PlayerControl
   };
 
   // Returns true once the watch page is fully prepared: cleanup styles are in
-  // place and the video element is hooked for audio handling.
+  // place, the video element is hooked, and the requested audio is applied.
   const applyWatchCleanup = () => {
     if (!iframe) return false;
 
@@ -191,7 +210,7 @@ export function createPlayerController(host: HTMLElement, options: PlayerControl
       const video = doc.querySelector<HTMLVideoElement>("#movie_player video, video");
       if (!video) return false;
       hookVideo(video);
-      return true;
+      return tryApplyPendingAudio();
     } catch {
       // Frame is detached or (unexpectedly) cross-origin; nothing to clean up.
       return false;
@@ -227,6 +246,9 @@ export function createPlayerController(host: HTMLElement, options: PlayerControl
     iframe.style.border = "0";
     iframe.addEventListener("load", () => {
       applyWatchCleanup();
+    });
+    iframe.addEventListener(PLAYER_STATE_EVENT, (event) => {
+      bridgeReply = parseAudioState((event as CustomEvent).detail);
     });
     host.replaceChildren(iframe);
     return iframe;

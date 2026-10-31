@@ -98,11 +98,15 @@ Settings are stored in `chrome.storage.local`, so they apply to this browser pro
 A new preview starts with the saved mute state and volume.
 When you mute, unmute, or change the volume inside a preview, the extension saves that as the new default.
 When you hover the same video again, it resumes with the audio you left it with.
+The extension sets audio through YouTube's own player controls, so the preview's volume slider shows the right value.
+YouTube's player controls are only available in the page's own script context.
+A second, very small script (`assets/page-bridge.js`, declared with `"world": "MAIN"`) runs there and does only this; it needs Chrome 111 or later.
+When you change the volume with YouTube's controls inside a preview, YouTube also saves it as its own volume for normal watch pages, the same as on any YouTube page.
 Browsers can block a preview from starting with sound until you interact with YouTube; YouTube then starts it muted or paused.
 
 ### YouTube's own hover preview
 
-While previews are on for the current page, the extension hides YouTube's inline preview (`ytd-video-preview`) and pauses it when a preview opens.
+While previews are on for the current page, the extension hides YouTube's inline preview (`ytd-video-preview`) and pauses it whenever it starts, so it does not play or download in the background.
 On those pages, this also hides YouTube's inline preview for cards the extension does not support, such as Shorts.
 Turn off previews for a page to get YouTube's own preview back on that page.
 
@@ -168,7 +172,7 @@ Run each command inside the sandbox with `sbx exec --workdir "$PWD" hoverzoom co
 
 Notes:
 
-- The extension pages and the content script build separately; `vite.content.config.ts` builds the content script as one standalone file, because MV3 content scripts cannot load shared chunks
+- The extension pages and the two content scripts build separately; `vite.content.config.ts` builds each content script (`content.js`, and `page-bridge.js` with `--mode bridge`) as one standalone file, because MV3 content scripts cannot load shared chunks
 - CI (`.github/workflows/ci.yml`) runs lint, type check, tests, and build on every push to `main` and every pull request
 
 ## Load The Extension
@@ -216,6 +220,8 @@ scripts/       Build verification and icon generation
   Coordinates hover state, page events, scroll/window guards, YouTube navigation events, and overlay lifecycle.
 - `src/content/player-controller.ts`
   Owns the `/watch` iframe, applies and saves audio, and preserves only the last hovered video session.
+- `src/content/page-bridge.ts`
+  Runs in the page's script context and calls YouTube's player API (`setVolume`, `mute`, `unMute`) for the preview iframe only. It talks to the content script through DOM events with JSON string details (`src/content/player-bridge.ts`).
 - `src/content/state-machine.ts`
   Encapsulates `idle`, hover-pending, open, and closing transitions.
 - `src/content/selectors.ts`

@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installPageBridge } from "../../src/content/page-bridge";
 import { createPlayerController } from "../../src/content/player-controller";
+import { addFakeYouTubePlayer } from "../helpers/fake-youtube-player";
 
 describe("player controller", () => {
   beforeEach(() => {
-    document.body.innerHTML = `<div id="yhp-player-host"></div>`;
+    document.body.innerHTML = `<div id="yhp-overlay"><div id="yhp-player-host"></div></div>`;
   });
 
   it("creates a watch-surface iframe on open", () => {
@@ -179,86 +181,98 @@ describe("player controller", () => {
     expect(frame.src).toBe("about:blank");
   });
 
-  const addVideo = (doc: Document) => {
-    const moviePlayer = doc.createElement("div");
-    moviePlayer.id = "movie_player";
-    // JSDOM does not implement media playback.
-    const video = Object.assign(doc.createElement("video"), { play: vi.fn(async () => undefined), pause: vi.fn() });
-    moviePlayer.append(video);
-    doc.body.append(moviePlayer);
-    return video;
-  };
-
   describe("audio", () => {
+    let removeBridge: () => void;
+
     beforeEach(() => {
       vi.useFakeTimers();
+      removeBridge = installPageBridge();
     });
 
     afterEach(() => {
+      removeBridge();
       vi.useRealTimers();
     });
 
-    const openWithVideo = (onAudioChange = vi.fn()) => {
+    const openWithPlayer = (initial = { volume: 100, muted: true }) => {
+      const onAudioChange = vi.fn();
       const host = document.querySelector("#yhp-player-host") as HTMLElement;
       const player = createPlayerController(host, { onAudioChange });
       player.open({ videoId: "abc12345678", muted: false, volume: 60 });
       const frame = host.querySelector<HTMLIFrameElement>("iframe") as HTMLIFrameElement;
       const doc = stubWatchDocument(frame);
-      const video = addVideo(doc);
+      const youtube = addFakeYouTubePlayer(doc, initial);
       frame.dispatchEvent(new Event("load"));
-      return { player, frame, doc, video, onAudioChange };
+      return { player, frame, onAudioChange, ...youtube };
     };
 
-    const changeVolume = (video: HTMLVideoElement, volume: number, muted = video.muted) => {
-      video.volume = volume;
-      video.muted = muted;
-      video.dispatchEvent(new Event("volumechange"));
-    };
+    it("applies the requested mute and volume through YouTube's player API", () => {
+      const { state } = openWithPlayer();
 
-    it("applies the requested mute and volume when playback starts", () => {
-      const { video } = openWithVideo();
-      video.muted = true;
-      video.volume = 1;
+      expect(state).toEqual({ volume: 60, muted: false });
+    });
 
+    it("waits for playback to start before applying audio", () => {
+      const host = document.querySelector("#yhp-player-host") as HTMLElement;
+      const player = createPlayerController(host);
+      player.open({ videoId: "abc12345678", muted: false, volume: 60 });
+      const frame = host.querySelector<HTMLIFrameElement>("iframe") as HTMLIFrameElement;
+      const { video, state, setPaused } = addFakeYouTubePlayer(stubWatchDocument(frame));
+      setPaused(true);
+      frame.dispatchEvent(new Event("load"));
+      expect(state.volume).toBe(100);
+
+      setPaused(false);
       video.dispatchEvent(new Event("playing"));
 
-      expect(video.muted).toBe(false);
-      expect(video.volume).toBeCloseTo(0.6);
+      expect(state).toEqual({ volume: 60, muted: false });
     });
 
     it("keeps the requested audio when YouTube changes it right after playback starts", () => {
-      const { video, onAudioChange } = openWithVideo();
-      video.dispatchEvent(new Event("playing"));
+      const { onAudioChange, state, viewerChanges } = openWithPlayer();
 
-      changeVolume(video, 1, true);
+      viewerChanges({ volume: 100, muted: true });
 
-      expect(video.muted).toBe(false);
-      expect(video.volume).toBeCloseTo(0.6);
+      expect(state).toEqual({ volume: 60, muted: false });
       expect(onAudioChange).not.toHaveBeenCalled();
     });
 
     it("reports audio changes the viewer makes in the preview", () => {
-      const { video, onAudioChange } = openWithVideo();
-      video.dispatchEvent(new Event("playing"));
+      const { onAudioChange, viewerChanges } = openWithPlayer();
       vi.advanceTimersByTime(1001);
 
-      changeVolume(video, 0.8);
+      viewerChanges({ volume: 80 });
 
       expect(onAudioChange).toHaveBeenCalledWith({ muted: false, volume: 80 });
     });
 
     it("keeps the viewer's audio when the same video resumes", () => {
-      const { player, video } = openWithVideo();
-      video.dispatchEvent(new Event("playing"));
+      const { player, state, viewerChanges, video } = openWithPlayer();
       vi.advanceTimersByTime(1001);
-      changeVolume(video, 0.8);
+      viewerChanges({ volume: 80 });
 
       player.pause();
       player.open({ videoId: "abc12345678", muted: true, volume: 35 });
       video.dispatchEvent(new Event("playing"));
 
-      expect(video.muted).toBe(false);
-      expect(video.volume).toBeCloseTo(0.8);
+      expect(state).toEqual({ volume: 80, muted: false });
+    });
+
+    it("stops cleanup polling once the watch page is prepared", () => {
+      const host = document.querySelector("#yhp-player-host") as HTMLElement;
+      const player = createPlayerController(host);
+
+      player.open({ videoId: "abc12345678", muted: true, volume: 35 });
+      const frame = host.querySelector<HTMLIFrameElement>("iframe") as HTMLIFrameElement;
+      const doc = stubWatchDocument(frame);
+      addFakeYouTubePlayer(doc);
+      vi.advanceTimersByTime(250);
+      expect(doc.getElementById("yhp-watch-cleanup")).not.toBeNull();
+
+      doc.getElementById("yhp-watch-cleanup")?.remove();
+      vi.advanceTimersByTime(1000);
+
+      expect(doc.getElementById("yhp-watch-cleanup")).toBeNull();
     });
   });
 
@@ -277,25 +291,4 @@ describe("player controller", () => {
     expect(onEscape).toHaveBeenCalledTimes(1);
   });
 
-  it("stops cleanup polling once the watch page is prepared", () => {
-    vi.useFakeTimers();
-    try {
-      const host = document.querySelector("#yhp-player-host") as HTMLElement;
-      const player = createPlayerController(host);
-
-      player.open({ videoId: "abc12345678", muted: true, volume: 35 });
-      const frame = host.querySelector<HTMLIFrameElement>("iframe") as HTMLIFrameElement;
-      const doc = stubWatchDocument(frame);
-      addVideo(doc);
-      vi.advanceTimersByTime(250);
-      expect(doc.getElementById("yhp-watch-cleanup")).not.toBeNull();
-
-      doc.getElementById("yhp-watch-cleanup")?.remove();
-      vi.advanceTimersByTime(1000);
-
-      expect(doc.getElementById("yhp-watch-cleanup")).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 });

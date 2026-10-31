@@ -96,4 +96,45 @@ describe("YouTube selectors", () => {
 
     expect(extractThumbnailRect(card)).toBeNull();
   });
+
+  it("reads title and channel from the camelCase lockup markup YouTube serves on watch pages", () => {
+    document.body.innerHTML = `
+      <yt-lockup-view-model>
+        <a href="/watch?v=1J4a9cT2lkw&amp;list=RD1J4a9cT2lkw" class="ytLockupViewModelContentImage">
+          <yt-thumbnail-view-model><img alt="" /></yt-thumbnail-view-model>
+        </a>
+        <yt-lockup-metadata-view-model>
+          <h3 class="ytLockupMetadataViewModelHeadingReset">
+            <a href="/watch?v=1J4a9cT2lkw" class="ytLockupMetadataViewModelTitle"><span>Upbeat Lofi Mix</span></a>
+          </h3>
+          <yt-content-metadata-view-model>
+            <div class="ytContentMetadataViewModelMetadataRow"><span>Lofi Shop 24h</span></div>
+            <div class="ytContentMetadataViewModelMetadataRow">
+              <span>1.6m</span><span class="ytContentMetadataViewModelDelimiter"> </span><span>2 years ago</span>
+            </div>
+          </yt-content-metadata-view-model>
+        </yt-lockup-metadata-view-model>
+      </yt-lockup-view-model>
+    `;
+
+    const card = findVideoCardFromTarget(document.querySelector("img")) as HTMLElement;
+
+    expect(extractVideoId(card)).toBe("1J4a9cT2lkw");
+    expect(extractMetadata(card)).toEqual({ title: "Upbeat Lofi Mix", channel: "Lofi Shop 24h" });
+  });
+
+  it("does not report views as the channel when the first row has several values", () => {
+    document.body.innerHTML = `
+      <yt-lockup-view-model>
+        <a href="/watch?v=abc12345678"><img alt="" /></a>
+        <div class="ytContentMetadataViewModelMetadataRow">
+          <span>1.6m views</span><span class="ytContentMetadataViewModelDelimiter"> </span><span>2 years ago</span>
+        </div>
+      </yt-lockup-view-model>
+    `;
+
+    const card = findVideoCardFromTarget(document.querySelector("img")) as HTMLElement;
+
+    expect(extractMetadata(card).channel).toBeUndefined();
+  });
 });

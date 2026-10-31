@@ -95,6 +95,7 @@ legend {
 }
 
 .yhp-unit {
+  min-width: 2ch;
   color: var(--muted);
 }
 
