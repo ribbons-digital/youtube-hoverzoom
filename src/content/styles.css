@@ -33,6 +33,7 @@ html[data-yhp-active] #video-preview {
 .yhp-controls {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: flex-end;
   padding: 10px 12px;
   gap: 8px;

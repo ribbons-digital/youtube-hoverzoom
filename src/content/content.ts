@@ -8,10 +8,11 @@ import {
   extractVideoId,
   findVideoCardFromTarget,
   getPageType,
+  isShortsCard,
   isSupportedCard
 } from "./selectors";
 import { createHoverStateMachine } from "./state-machine";
-import { isPageEnabled, normalizeSettings, type HoverPlayerSettings } from "../shared/settings";
+import { getShortsWidth, isPageEnabled, normalizeSettings, type HoverPlayerSettings } from "../shared/settings";
 import { getSettings, saveLiveAudioState, SETTINGS_KEY } from "../shared/storage";
 
 const SCROLL_REOPEN_COOLDOWN_MS = 200;
@@ -64,6 +65,9 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
   const getCard = (cardId: string) => document.querySelector<HTMLElement>(`[data-yhp-card-id="${cardId}"]`);
 
   const isActiveOnCurrentPage = () => isPageEnabled(getPageType(), settings);
+
+  const canPreviewCard = (card: HTMLElement) =>
+    isSupportedCard(card) && (settings.enableShorts || !isShortsCard(card));
 
   const updateActivePageAttribute = () => {
     document.documentElement.toggleAttribute(ACTIVE_PAGE_ATTRIBUTE, isActiveOnCurrentPage());
@@ -122,16 +126,17 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
   // Shows the overlay for a card and places it beside the card's thumbnail.
   const showOverlayForCard = (card: HTMLElement) => {
     const metadata = settings.showMetadata ? extractMetadata(card) : {};
+    const width = isShortsCard(card) ? getShortsWidth(settings.overlayHeight) : settings.overlayWidth;
     const outerHeight = overlay.show({
       ...metadata,
-      width: settings.overlayWidth,
+      width,
       height: settings.overlayHeight
     });
 
     const sourceRect = extractThumbnailRect(card) ?? card.getBoundingClientRect();
     const position = computeOverlayPosition({
       sourceRect,
-      overlayWidth: settings.overlayWidth,
+      overlayWidth: width,
       overlayHeight: outerHeight,
       viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
@@ -151,7 +156,7 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
       if (now - lastSwitchAt < SWITCH_COOLDOWN_MS) return false;
 
       const card = getCard(cardId);
-      if (!card || !isSupportedCard(card)) return false;
+      if (!card || !canPreviewCard(card)) return false;
 
       const videoId = extractVideoId(card);
       if (!videoId) return false;
@@ -251,7 +256,7 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
     };
 
     const card = findVideoCardFromTarget(event.target);
-    if (!card || !isSupportedCard(card)) return;
+    if (!card || !canPreviewCard(card)) return;
 
     if (!card.dataset.yhpCardId) card.dataset.yhpCardId = randomId();
     const cardId = card.dataset.yhpCardId;
@@ -345,7 +350,9 @@ export function bootstrapContentScript(initialSettings: HoverPlayerSettings) {
     machine.setDelays({ hoverDelayMs: settings.hoverDelayMs, closeDelayMs: settings.closeDelayMs });
     updateActivePageAttribute();
 
-    if (!isActiveOnCurrentPage()) {
+    const currentCardId = machine.getSnapshot().currentCardId;
+    const currentCard = currentCardId ? getCard(currentCardId) : null;
+    if (!isActiveOnCurrentPage() || (currentCard && !canPreviewCard(currentCard))) {
       resetHoverSession("discard");
       return;
     }

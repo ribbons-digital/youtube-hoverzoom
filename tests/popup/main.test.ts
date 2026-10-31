@@ -9,22 +9,7 @@ describe("popup", () => {
     document.body.innerHTML = `<div id="app"></div>`;
 
     await renderPopup({
-      settings: {
-        enabled: true,
-        hoverDelayMs: 400,
-        closeDelayMs: 150,
-        defaultMuted: true,
-        defaultVolume: 35,
-        overlayWidth: 960,
-        overlayHeight: 540,
-        showMetadata: true,
-        enableOnHome: true,
-        enableOnSearch: true,
-        enableOnSubscriptions: true,
-        enableOnWatchSidebar: true,
-        enableOnChannelVideos: true,
-        debug: false
-      },
+      settings: DEFAULT_SETTINGS,
       saveSettings,
       openOptionsPage
     });
